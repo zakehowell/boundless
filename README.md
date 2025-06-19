@@ -10,14 +10,22 @@
 - **钱包**：用于质押 USDC 和与网络交互的私钥
 
 ## 一键安装
-安装 curl 命令
+
 ```bash
-apt update && apt install -y curl
+# 更新依赖 安装wget
+apt update && apt install -y wget
 ```
 
-使用以下命令一键安装：
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/zakehowell/boundless/main/setup_boundless_prover.sh | bash
+# 下载脚本
+wget https://raw.githubusercontent.com/zakehowell/boundless/main/setup_boundless_prover.sh -O setup_boundless_prover.sh
+
+# 赋予权限
+chmod +x setup_boundless_prover.sh
+···
+# 运行脚本
+./setup_boundless_prover.sh
 ```
 
 安装完成后使用以下命令检查日志
@@ -39,3 +47,4 @@ just broker down
 
 # 启动代理
 just broker up
+
