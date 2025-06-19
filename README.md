@@ -33,9 +33,6 @@ chmod +x setup_boundless_prover.sh
 docker compose logs -f broker
 ```
 
-![alt text](image.png)
-看到这些日志说明已经启动成功，等待接到任务即可。
-
 
 常用命令
 ```bash
