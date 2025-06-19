@@ -19,13 +19,13 @@ apt update && apt install -y wget
 
 ```bash
 # 下载脚本
-wget https://raw.githubusercontent.com/zakehowell/boundless/main/setup_boundless_prover.sh -O setup_boundless_prover.sh
+wget https://raw.githubusercontent.com/zakehowell/boundless/main/setup_prover.sh -O setup_prover.sh
 
 # 赋予权限
-chmod +x setup_boundless_prover.sh
+chmod +x setup_prover.sh
 ···
 # 运行脚本
-./setup_boundless_prover.sh
+./setup_prover.sh
 ```
 
 安装完成后使用以下命令检查日志
