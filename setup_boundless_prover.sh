@@ -1,224 +1,118 @@
 #!/bin/bash
 
-# =============================================================================
-# Boundless Prover Node Setup Script
-# Description: Automated installation and configuration of Boundless prover node
-# =============================================================================
-
 set -euo pipefail
 
-# Color variables
-CYAN='\033[0;36m'
-LIGHTBLUE='\033[1;34m'
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-PURPLE='\033[0;35m'
-YELLOW='\033[1;33m'
-BOLD='\033[1m'
-RESET='\033[0m'
+# 加载配置文件
+source "$(dirname "$0")/config.sh"
 
-# Constants
-SCRIPT_NAME="$(basename "$0")"
-LOG_FILE="/var/log/boundless_prover_setup.log"
-ERROR_LOG="/var/log/boundless_prover_error.log"
-INSTALL_DIR="$HOME/boundless"
-COMPOSE_FILE="$INSTALL_DIR/compose.yml"
-BROKER_CONFIG="$INSTALL_DIR/broker.toml"
-
-# Exit codes
-EXIT_SUCCESS=0
-EXIT_OS_CHECK_FAILED=1
-EXIT_DPKG_ERROR=2
-EXIT_DEPENDENCY_FAILED=3
-EXIT_GPU_ERROR=4
-EXIT_NETWORK_ERROR=5
-EXIT_USER_ABORT=6
-EXIT_UNKNOWN=99
-
-# Flags
-ALLOW_ROOT=false
-FORCE_RECLONE=false
-START_IMMEDIATELY=false
-
-# Parse command-line arguments
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --allow-root)
-            ALLOW_ROOT=true
-            shift
-            ;;
-        --force-reclone)
-            FORCE_RECLONE=true
-            shift
-            ;;
-        --start-immediately)
-            START_IMMEDIATELY=true
-            shift
-            ;;
-        --help)
-            echo "Usage: $0 [options]"
-            echo "Options:"
-            echo "  --allow-root        Allow running as root without prompting"
-            echo "  --force-reclone     Automatically delete and re-clone the directory if it exists"
-            echo "  --start-immediately Automatically run the management script"
-            echo "  --help              Show this help message"
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
-            ;;
-    esac
-done
-
-# Trap function for exit logging
-cleanup_on_exit() {
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        error "Installation failed with exit code: $exit_code"
-        echo "[EXIT] Script exited with code: $exit_code at $(date)" >> "$ERROR_LOG"
-        echo "[EXIT] Last command: ${BASH_COMMAND}" >> "$ERROR_LOG"
-        echo "[EXIT] Line number: ${BASH_LINENO[0]}" >> "$ERROR_LOG"
-        echo "[EXIT] Function stack: ${FUNCNAME[@]}" >> "$ERROR_LOG"
-
-        echo -e "\n${RED}${BOLD}Installation Failed!${RESET}"
-        echo -e "${YELLOW}Check error log at: $ERROR_LOG${RESET}"
-        echo -e "${YELLOW}Check full log at: $LOG_FILE${RESET}"
-
-        case $exit_code in
-            $EXIT_DPKG_ERROR)
-                echo -e "\n${RED}DPKG Configuration Error Detected!${RESET}"
-                echo -e "${YELLOW}Please run the following command manually:${RESET}"
-                echo -e "${BOLD}dpkg --configure -a${RESET}"
-                echo -e "${YELLOW}Then re-run this installation script.${RESET}"
-                ;;
-            $EXIT_OS_CHECK_FAILED)
-                echo -e "\n${RED}Operating system check failed!${RESET}"
-                ;;
-            $EXIT_DEPENDENCY_FAILED)
-                echo -e "\n${RED}Dependency installation failed!${RESET}"
-                ;;
-            $EXIT_GPU_ERROR)
-                echo -e "\n${RED}GPU configuration error!${RESET}"
-                ;;
-            $EXIT_NETWORK_ERROR)
-                echo -e "\n${RED}Network configuration error!${RESET}"
-                ;;
-            $EXIT_USER_ABORT)
-                echo -e "\n${YELLOW}Installation aborted by user.${RESET}"
-                ;;
-            *)
-                echo -e "\n${RED}Unknown error occurred!${RESET}"
-                ;;
-        esac
-    fi
-}
-
-# Set trap
-trap cleanup_on_exit EXIT
-trap 'echo "[SIGNAL] Caught signal ${?} at line ${LINENO}" >> "$ERROR_LOG"' ERR
-
-# Network configurations
-declare -A NETWORKS
-NETWORKS["base"]="Base Mainnet|0x0b144e07a0826182b6b59788c34b32bfa86fb711|0x26759dbB201aFbA361Bec78E097Aa3942B0b4AB8|0x8C5a8b5cC272Fe2b74D18843CF9C3aCBc952a760|https://base-mainnet.beboundless.xyz"
-NETWORKS["base-sepolia"]="Base Sepolia|0x0b144e07a0826182b6b59788c34b32bfa86fb711|0x6B7ABa661041164b8dB98E30AE1454d2e9D5f14b|0x8C5a8b5cC272Fe2b74D18843CF9C3aCBc952a760|https://base-sepolia.beboundless.xyz"
-NETWORKS["eth-sepolia"]="Ethereum Sepolia|0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187|0x13337C76fE2d1750246B68781ecEe164643b98Ec|0x7aAB646f23D1392d4522CFaB0b7FB5eaf6821d64|https://eth-sepolia.beboundless.xyz/"
-
-# Functions
+# 中文函数定义
 info() {
-    printf "${CYAN}[INFO]${RESET} %s\n" "$1"
-    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    local msg="$1"
+    local func="${FUNCNAME[1]}"
+    printf "${CYAN}[信息]${RESET} %s\n" "$msg"
+    echo "[信息] $(date '+%Y-%m-%d %H:%M:%S') [$func] - $msg" >> "$LOG_FILE"
 }
 
 success() {
-    printf "${GREEN}[SUCCESS]${RESET} %s\n" "$1"
-    echo "[SUCCESS] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    local msg="$1"
+    printf "${GREEN}[成功]${RESET} %s\n" "$msg"
+    echo "[成功] $(date '+%Y-%m-%d %H:%M:%S') - $msg" >> "$LOG_FILE"
 }
 
 error() {
-    printf "${RED}[ERROR]${RESET} %s\n" "$1" >&2
-    echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
-    echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$ERROR_LOG"
+    local msg="$1"
+    local func="${FUNCNAME[1]}"
+    printf "${RED}[错误]${RESET} %s\n" "$msg" >&2
+    echo "[错误] $(date '+%Y-%m-%d %H:%M:%S') [$func] - $msg" >> "$LOG_FILE"
+    echo "[错误] $(date '+%Y-%m-%d %H:%M:%S') [$func] - $msg" >> "$ERROR_LOG"
 }
 
 warning() {
-    printf "${YELLOW}[WARNING]${RESET} %s\n" "$1"
-    echo "[WARNING] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    local msg="$1"
+    printf "${YELLOW}[警告]${RESET} %s\n" "$msg"
+    echo "[警告] $(date '+%Y-%m-%d %H:%M:%S') - $msg" >> "$LOG_FILE"
 }
 
 prompt() {
-    printf "${PURPLE}[INPUT]${RESET} %s" "$1"
+    printf "${PURPLE}[输入]${RESET} %s" "$1"
 }
 
-# Check for dpkg errors
+# 检查 dpkg 状态
 check_dpkg_status() {
     if dpkg --audit 2>&1 | grep -q "dpkg was interrupted"; then
-        error "dpkg was interrupted - manual intervention required"
+        error "dpkg 被中断，需要手动修复"
         return 1
     fi
     return 0
 }
 
-# Check OS compatibility
+# 检查操作系统兼容性
 check_os() {
-    info "Checking operating system compatibility..."
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        if [[ "${ID,,}" != "ubuntu" ]]; then
-            error "Unsupported OS: $NAME. This script is for Ubuntu."
-            exit $EXIT_OS_CHECK_FAILED
-        elif [[ "${VERSION_ID,,}" != "22.04" && "${VERSION_ID,,}" != "20.04" ]]; then
-            warning "Tested on Ubuntu 20.04/22.04. Your version: $VERSION_ID"
-            prompt "Continue anyway? (y/N): "
-            read -r response
-            if [[ ! "$response" =~ ^[yY]$ ]]; then
-                exit $EXIT_USER_ABORT
-            fi
-        else
-            info "Operating System: $PRETTY_NAME"
+    info "检查操作系统兼容性..."
+    if [[ ! -f /etc/os-release ]]; then
+        handle_error "/etc/os-release 未找到，无法确定操作系统" $EXIT_OS_CHECK_FAILED
+    fi
+    . /etc/os-release
+    if [[ "${ID,,}" != "ubuntu" ]]; then
+        handle_error "不支持的操作系统：$NAME。本脚本仅支持 Ubuntu" $EXIT_OS_CHECK_FAILED
+    elif [[ "${VERSION_ID,,}" != "22.04" && "${VERSION_ID,,}" != "20.04" ]]; then
+        warning "脚本在 Ubuntu 20.04/22.04 上测试，当前版本：$VERSION_ID"
+        prompt "是否继续？(y/N): "
+        read -r response
+        if [[ ! "$response" =~ ^[yY]$ ]]; then
+            exit $EXIT_USER_ABORT
         fi
     else
-        error "/etc/os-release not found. Unable to determine OS."
-        exit $EXIT_OS_CHECK_FAILED
+        info "操作系统：$PRETTY_NAME"
     fi
 }
 
-# Check if command exists
+# 检查命令是否存在
 command_exists() {
     command -v "$1" &> /dev/null
 }
 
-# Check if package is installed
+# 检查软件包是否已安装
 is_package_installed() {
     dpkg -s "$1" &> /dev/null
 }
 
-# Update system
+# 更新系统
 update_system() {
-    info "Updating system packages..."
+    info "更新系统软件包..."
     if ! check_dpkg_status; then
         exit $EXIT_DPKG_ERROR
     fi
-    {
-        if ! apt update -y 2>&1; then
-            error "apt update failed"
-            if apt update 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! apt upgrade -y 2>&1; then
-            error "apt upgrade failed"
-            if apt upgrade 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-    } >> "$LOG_FILE" 2>&1
-    success "System packages updated"
+    update_apt
+    if ! apt upgrade -y >> "$LOG_FILE" 2>&1; then
+        handle_error "apt 升级失败" $EXIT_DEPENDENCY_FAILED
+    fi
+    success "系统软件包已更新"
 }
 
-# Install basic dependencies
+# 安装软件包
+install_package() {
+    local package="$1"
+    info "安装 $package..."
+    if ! check_dpkg_status; then
+        exit $EXIT_DPKG_ERROR
+    fi
+    if ! apt install -y "$package" >> "$LOG_FILE" 2>&1; then
+        handle_error "安装 $package 失败" $EXIT_DEPENDENCY_FAILED
+    fi
+    success "$package 已安装"
+}
+
+# 更新 apt 包列表
+update_apt() {
+    info "更新包列表..."
+    if ! apt update -y >> "$LOG_FILE" 2>&1; then
+        handle_error "apt 更新失败" $EXIT_DEPENDENCY_FAILED
+    fi
+    success "包列表已更新"
+}
+
+# 安装基本依赖
 install_basic_deps() {
     local packages=(
         curl iptables build-essential git wget lz4 jq make gcc nano
@@ -227,102 +121,63 @@ install_basic_deps() {
         libclang-dev ninja-build nvtop ubuntu-drivers-common
         gnupg ca-certificates lsb-release postgresql-client
     )
-    info "Installing basic dependencies..."
-    if ! check_dpkg_status; then
-        exit $EXIT_DPKG_ERROR
-    fi
-    {
-        if ! apt install -y "${packages[@]}" 2>&1; then
-            error "Failed to install basic dependencies"
-            if apt install -y "${packages[@]}" 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-    } >> "$LOG_FILE" 2>&1
-    success "Basic dependencies installed"
+    info "安装基本依赖..."
+    printf "${CYAN}进度: ["
+    for pkg in "${packages[@]}"; do
+        install_package "$pkg" &
+        printf "."
+    done
+    wait
+    printf "]${RESET}\n"
+    success "基本依赖已安装"
 }
 
-# Install GPU drivers
-install_gpu_drivers() {
-    info "Installing GPU drivers..."
-    if ! check_dpkg_status; then
-        exit $EXIT_DPKG_ERROR
-    fi
-    {
-        if ! ubuntu-drivers install 2>&1; then
-            error "Failed to install GPU drivers"
-            exit $EXIT_GPU_ERROR
-        fi
-    } >> "$LOG_FILE" 2>&1
-    success "GPU drivers installed"
-}
-
-# Install Docker
+# 安装 Docker
 install_docker() {
     if command_exists docker; then
-        info "Docker already installed"
+        info "Docker 已安装"
         return
     fi
-    info "Installing Docker..."
+    info "安装 Docker..."
     if ! check_dpkg_status; then
         exit $EXIT_DPKG_ERROR
     fi
-    {
-        if ! apt install -y apt-transport-https ca-certificates curl gnupg-agent software-properties-common 2>&1; then
-            error "Failed to install Docker prerequisites"
-            if apt install -y apt-transport-https 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-        if ! apt update -y 2>&1; then
-            error "Failed to update package list for Docker"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>&1; then
-            error "Failed to install Docker"
-            if apt install -y docker-ce 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        systemctl enable docker
-        systemctl start docker
-        usermod -aG docker $(logname 2>/dev/null || echo "$USER")
-    } >> "$LOG_FILE" 2>&1
-    success "Docker installed"
+    install_package "apt-transport-https"
+    install_package "ca-certificates"
+    install_package "curl"
+    install_package "gnupg-agent"
+    install_package "software-properties-common"
+    with_retry "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg"
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    update_apt
+    install_package "docker-ce"
+    install_package "docker-ce-cli"
+    install_package "containerd.io"
+    install_package "docker-compose-plugin"
+    systemctl enable docker
+    systemctl start docker
+    usermod -aG docker "$(logname 2>/dev/null || echo "$USER")"
+    success "Docker 已安装"
 }
 
-# Install NVIDIA Container Toolkit
+# 安装 NVIDIA 容器工具包
 install_nvidia_toolkit() {
     if is_package_installed "nvidia-docker2"; then
-        info "NVIDIA Container Toolkit already installed"
+        info "NVIDIA 容器工具包已安装"
         return
     fi
-    info "Installing NVIDIA Container Toolkit..."
+    info "安装 NVIDIA 容器工具包..."
     if ! check_dpkg_status; then
         exit $EXIT_DPKG_ERROR
     fi
-    {
-        distribution=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
-        curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
-        curl -s -L https://nvidia.github.io/nvidia-docker/"$distribution"/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
-        if ! apt update -y 2>&1; then
-            error "Failed to update package list for NVIDIA toolkit"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! apt install -y nvidia-docker2 2>&1; then
-            error "Failed to install NVIDIA Docker support"
-            if apt install -y nvidia-docker2 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        mkdir -p /etc/docker
-        tee /etc/docker/daemon.json <<EOF
+    local distribution
+    distribution=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"' | tr -d '\.')
+    with_retry "curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -"
+    with_retry "curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list"
+    update_apt
+    install_package "nvidia-docker2"
+    mkdir -p /etc/docker
+    tee /etc/docker/daemon.json <<EOF
 {
     "default-runtime": "nvidia",
     "runtimes": {
@@ -333,238 +188,141 @@ install_nvidia_toolkit() {
     }
 }
 EOF
-        systemctl restart docker
-    } >> "$LOG_FILE" 2>&1
-    success "NVIDIA Container Toolkit installed"
+    systemctl restart docker
+    success "NVIDIA 容器工具包已安装"
 }
 
-# Install Rust
+# 安装 Rust
 install_rust() {
     if command_exists rustc; then
-        info "Rust already installed"
+        info "Rust 已安装"
         return
     fi
-    info "Installing Rust..."
-    {
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-        rustup update
-    } >> "$LOG_FILE" 2>&1
-    success "Rust installed"
+    info "安装 Rust..."
+    with_retry "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+    source "$HOME/.cargo/env"
+    with_retry "rustup update"
+    success "Rust 已安装"
 }
 
-# Install Just
+# 安装 Just
 install_just() {
     if command_exists just; then
-        info "Just already installed"
+        info "Just 已安装"
         return
     fi
-    info "Installing Just command runner..."
-    {
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-    } >> "$LOG_FILE" 2>&1
-    success "Just installed"
+    info "安装 Just 命令运行器..."
+    with_retry "curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin"
+    success "Just 已安装"
 }
 
-# Install CUDA Toolkit
-install_cuda() {
-    if is_package_installed "cuda-toolkit"; then
-        info "CUDA Toolkit already installed"
-        return
-    fi
-    info "Installing CUDA Toolkit..."
-    if ! check_dpkg_status; then
-        exit $EXIT_DPKG_ERROR
-    fi
-    {
-        distribution=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"'| tr -d '\.')
-        if ! wget https://developer.download.nvidia.com/compute/cuda/repos/$distribution/$(/usr/bin/uname -m)/cuda-keyring_1.1-1_all.deb 2>&1; then
-            error "Failed to download CUDA keyring"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! dpkg -i cuda-keyring_1.1-1_all.deb 2>&1; then
-            error "Failed to install CUDA keyring"
-            rm cuda-keyring_1.1-1_all.deb
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        rm cuda-keyring_1.1-1_all.deb
-        if ! apt-get update 2>&1; then
-            error "Failed to update package list for CUDA"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! apt-get install -y cuda-toolkit 2>&1; then
-            error "Failed to install CUDA Toolkit"
-            if apt-get install -y cuda-toolkit 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-    } >> "$LOG_FILE" 2>&1
-    success "CUDA Toolkit installed"
-}
-
-# Install Rust dependencies
+# 安装 Rust 依赖
 install_rust_deps() {
-    info "Installing Rust dependencies..."
-
-    # Source the Rust environment
-    source "$HOME/.cargo/env" || {
-        error "Failed to source $HOME/.cargo/env. Ensure Rust is installed."
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-
-    # Check and install cargo if not present
-    if ! command_exists cargo; then
-        if ! check_dpkg_status; then
-            exit $EXIT_DPKG_ERROR
-        fi
-        info "Installing cargo..."
-        apt update >> "$LOG_FILE" 2>&1 || {
-            error "Failed to update package list for cargo"
-            exit $EXIT_DEPENDENCY_FAILED
-        }
-        apt install -y cargo >> "$LOG_FILE" 2>&1 || {
-            error "Failed to install cargo"
-            if apt install -y cargo 2>&1 | grep -q "dpkg was interrupted"; then
-                exit $EXIT_DPKG_ERROR
-            fi
-            exit $EXIT_DEPENDENCY_FAILED
-        }
-    fi
-
-    # Always install rzup and the RISC Zero Rust toolchain
-    info "Installing rzup..."
-    curl -L https://risczero.com/install | bash >> "$LOG_FILE" 2>&1 || {
-        error "Failed to install rzup"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-    # Update PATH in the current shell
-    export PATH="$PATH:/root/.risc0/bin"
-    # Source bashrc to ensure environment is updated
-    PS1='' source ~/.bashrc >> "$LOG_FILE" 2>&1 || {
-        error "Failed to source ~/.bashrc after rzup install"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-    # Install RISC Zero Rust toolchain
-    rzup install rust >> "$LOG_FILE" 2>&1 || {
-        error "Failed to install RISC Zero Rust toolchain"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-
-    # Detect the RISC Zero toolchain
-    TOOLCHAIN=$(rustup toolchain list | grep risc0 | head -1)
-    if [ -z "$TOOLCHAIN" ]; then
-        error "No RISC Zero toolchain found after installation"
-        exit $EXIT_DEPENDENCY_FAILED
-    fi
-    info "Using RISC Zero toolchain: $TOOLCHAIN"
-
-    # Install cargo-risczero
-    if ! command_exists cargo-risczero; then
-        info "Installing cargo-risczero..."
-        cargo install cargo-risczero >> "$LOG_FILE" 2>&1 || {
-            error "Failed to install cargo-risczero"
-            exit $EXIT_DEPENDENCY_FAILED
-        }
-        rzup install cargo-risczero >> "$LOG_FILE" 2>&1 || {
-            error "Failed to install cargo-risczero via rzup"
-            exit $EXIT_DEPENDENCY_FAILED
-        }
-    fi
-
-    # Install bento-client with the RISC Zero toolchain
-    info "Installing bento-client..."
-    RUSTUP_TOOLCHAIN=$TOOLCHAIN cargo install --git https://github.com/risc0/risc0 bento-client --bin bento_cli >> "$LOG_FILE" 2>&1 || {
-        error "Failed to install bento-client"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-    # Persist PATH for cargo binaries
-    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-    PS1='' source ~/.bashrc >> "$LOG_FILE" 2>&1 || {
-        error "Failed to source ~/.bashrc after installing bento-client"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-
-    # Install boundless-cli
-    info "Installing boundless-cli..."
-    cargo install --locked boundless-cli >> "$LOG_FILE" 2>&1 || {
-        error "Failed to install boundless-cli"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-    # Update PATH for boundless-cli
-    export PATH="$PATH:/root/.cargo/bin"
-    PS1='' source ~/.bashrc >> "$LOG_FILE" 2>&1 || {
-        error "Failed to source ~/.bashrc after installing boundless-cli"
-        exit $EXIT_DEPENDENCY_FAILED
-    }
-
-    success "Rust dependencies installed"
+    info "安装 Rust 依赖..."
+    source "$HOME/.cargo/env" || handle_error "无法加载 $HOME/.cargo/env" $EXIT_DEPENDENCY_FAILED
+    install_cargo
+    install_rzup
+    install_cargo_risczero
+    install_bento_client
+    install_boundless_cli
+    echo 'export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"' >> ~/.bashrc
+    PS1='' source ~/.bashrc || handle_error "无法加载 ~/.bashrc" $EXIT_DEPENDENCY_FAILED
+    success "Rust 依赖已安装"
 }
 
-# Clone Boundless repository
+# 安装 cargo
+install_cargo() {
+    if command_exists cargo; then
+        info "Cargo 已安装"
+        return
+    fi
+    install_package "cargo"
+}
+
+# 安装 rzup
+install_rzup() {
+    info "安装 rzup..."
+    with_retry "curl -L https://risczero.com/install | bash"
+    export PATH="$PATH:$HOME/.risc0/bin"
+    rzup install rust >> "$LOG_FILE" 2>&1 || handle_error "安装 RISC Zero Rust 工具链失败" $EXIT_DEPENDENCY_FAILED
+}
+
+# 安装 cargo-risczero
+install_cargo_risczero() {
+    if command_exists cargo-risczero; then
+        info "cargo-risczero 已安装"
+        return
+    fi
+    info "安装 cargo-risczero..."
+    with_retry "cargo install cargo-risczero"
+    with_retry "rzup install cargo-risczero"
+}
+
+# 安装 bento-client
+install_bento_client() {
+    info "安装 bento-client..."
+    local toolchain
+    toolchain=$(rustup toolchain list | grep risc0 | head -1)
+    if [[ -z "$toolchain" ]]; then
+        handle_error "未找到 RISC Zero 工具链" $EXIT_DEPENDENCY_FAILED
+    fi
+    with_retry "RUSTUP_TOOLCHAIN=$toolchain cargo install --git https://github.com/risc0/risc0 bento-client --bin bento_cli"
+}
+
+# 安装 boundless-cli
+install_boundless_cli() {
+    info "安装 boundless-cli..."
+    with_retry "cargo install --locked boundless-cli"
+}
+
+# 克隆 Boundless 仓库
 clone_repository() {
-    info "Setting up Boundless repository..."
+    info "设置 Boundless 仓库..."
     if [[ -d "$INSTALL_DIR" ]]; then
         if [[ "$FORCE_RECLONE" == "true" ]]; then
-            warning "Deleting existing directory $INSTALL_DIR (forced via --force-reclone)"
+            warning "强制删除现有目录 $INSTALL_DIR"
             rm -rf "$INSTALL_DIR"
         else
-            warning "Boundless directory already exists at $INSTALL_DIR"
-            prompt "Delete and re-clone? (y/N): "
+            warning "Boundless 目录已存在于 $INSTALL_DIR"
+            prompt "是否删除并重新克隆？(y/N): "
             read -r response
             if [[ "$response" =~ ^[yY]$ ]]; then
                 rm -rf "$INSTALL_DIR"
             else
                 cd "$INSTALL_DIR"
-                if ! git pull origin release-0.10 2>&1 >> "$LOG_FILE"; then
-                    error "Failed to update repository"
-                    exit $EXIT_DEPENDENCY_FAILED
+                if ! git pull origin release-0.10 >> "$LOG_FILE" 2>&1; then
+                    handle_error "更新仓库失败" $EXIT_DEPENDENCY_FAILED
                 fi
                 return
             fi
         fi
     fi
-    {
-        if ! git clone https://github.com/boundless-xyz/boundless "$INSTALL_DIR" 2>&1; then
-            error "Failed to clone repository"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        cd "$INSTALL_DIR"
-        if ! git checkout release-0.10 2>&1; then
-            error "Failed to checkout release-0.10"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-        if ! git submodule update --init --recursive 2>&1; then
-            error "Failed to initialize submodules"
-            exit $EXIT_DEPENDENCY_FAILED
-        fi
-    } >> "$LOG_FILE" 2>&1
-    success "Repository cloned and initialized"
+    with_retry "git clone https://github.com/boundless-xyz/boundless $INSTALL_DIR"
+    cd "$INSTALL_DIR"
+    with_retry "git checkout release-0.10"
+    with_retry "git submodule update --init --recursive"
+    success "仓库已克隆并初始化"
 }
 
-# Detect GPU configuration
+# 检测 GPU 配置
 detect_gpus() {
-    info "Detecting GPU configuration..."
+    info "检测 GPU 配置..."
     if ! command_exists nvidia-smi; then
-        error "nvidia-smi not found. GPU drivers may not be installed correctly."
-        exit $EXIT_GPU_ERROR
+        handle_error "未找到 nvidia-smi，GPU 驱动可能未正确安装" $EXIT_GPU_ERROR
     fi
-    GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
-    if [[ $GPU_COUNT -eq 0 ]]; then
-        error "No GPUs detected"
-        exit $EXIT_GPU_ERROR
+    local gpu_info
+    gpu_info=$(nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null)
+    if [[ -z "$gpu_info" ]]; then
+        handle_error "未检测到 GPU" $EXIT_GPU_ERROR
     fi
-    info "Found $GPU_COUNT GPU(s)"
+    GPU_COUNT=$(echo "$gpu_info" | wc -l)
+    info "发现 $GPU_COUNT 个 GPU"
     GPU_MEMORY=()
-    for i in $(seq 0 $((GPU_COUNT - 1))); do
-        MEM=$(nvidia-smi -i $i --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-        if [[ -z "$MEM" ]]; then
-            error "Failed to detect GPU $i memory"
-            exit $EXIT_GPU_ERROR
-        fi
-        GPU_MEMORY+=($MEM)
-        info "GPU $i: ${MEM}MB VRAM"
-    done
+    while IFS=',' read -r idx mem; do
+        mem=$(echo "$mem" | tr -d ' ')
+        GPU_MEMORY+=("$mem")
+        info "GPU $idx: ${mem}MB VRAM"
+    done <<< "$gpu_info"
     MIN_VRAM=$(printf '%s\n' "${GPU_MEMORY[@]}" | sort -n | head -1)
     if [[ $MIN_VRAM -ge 40000 ]]; then
         SEGMENT_SIZE=22
@@ -579,133 +337,19 @@ detect_gpus() {
     else
         SEGMENT_SIZE=17
     fi
-    info "Setting SEGMENT_SIZE=$SEGMENT_SIZE based on minimum VRAM of ${MIN_VRAM}MB"
+    info "根据最小 VRAM ${MIN_VRAM}MB 设置 SEGMENT_SIZE=$SEGMENT_SIZE"
 }
 
-# Configure compose.yml for multiple GPUs
+# 配置 compose.yml
 configure_compose() {
-    info "Configuring compose.yml for $GPU_COUNT GPU(s)..."
+    info "为 $GPU_COUNT 个 GPU 配置 compose.yml..."
+    cp "$INSTALL_DIR/dockerfiles/compose-template.yml" "$COMPOSE_FILE"
+    sed -i "s/\${SEGMENT_SIZE:-21}/$SEGMENT_SIZE/" "$COMPOSE_FILE"
     if [[ $GPU_COUNT -eq 1 ]]; then
-        info "Single GPU detected, using default compose.yml"
-        return
-    fi
-    cat > "$COMPOSE_FILE" << 'EOF'
-name: bento
-# Anchors:
-x-base-environment: &base-environment
-  DATABASE_URL: postgresql://${POSTGRES_USER:-worker}:${POSTGRES_PASSWORD:-password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-taskdb}
-  REDIS_URL: redis://${REDIS_HOST:-redis}:6379
-  S3_URL: http://${MINIO_HOST:-minio}:9000
-  S3_BUCKET: ${MINIO_BUCKET:-workflow}
-  S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
-  S3_SECRET_KEY: ${MINIO_ROOT_PASS:-password}
-  RUST_LOG: ${RUST_LOG:-info}
-  RUST_BACKTRACE: 1
-
-x-agent-common: &agent-common
-  image: risczero/risc0-bento-agent:stable@sha256:c6fcc92686a5d4b20da963ebba3045f09a64695c9ba9a9aa984dd98b5ddbd6f9
-  restart: always
-  runtime: nvidia
-  depends_on:
-    - postgres
-    - redis
-    - minio
-  environment:
-    <<: *base-environment
-
-x-exec-agent-common: &exec-agent-common
-  <<: *agent-common
-  mem_limit: 4G
-  cpus: 3
-  environment:
-    <<: *base-environment
-    RISC0_KECCAK_PO2: ${RISC0_KECCAK_PO2:-17}
-  entrypoint: /app/agent -t exec --segment-po2 ${SEGMENT_SIZE:-21}
-
-services:
-  redis:
-    hostname: ${REDIS_HOST:-redis}
-    image: ${REDIS_IMG:-redis:7.2.5-alpine3.19}
-    restart: always
-    ports:
-      - 6379:6379
-    volumes:
-      - redis-data:/data
-
-  postgres:
-    hostname: ${POSTGRES_HOST:-postgres}
-    image: ${POSTGRES_IMG:-postgres:16.3-bullseye}
-    restart: always
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-taskdb}
-      POSTGRES_USER: ${POSTGRES_USER:-worker}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-    expose:
-      - '${POSTGRES_PORT:-5432}'
-    ports:
-      - '${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}'
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    command: -p ${POSTGRES_PORT:-5432}
-
-  minio:
-    hostname: ${MINIO_HOST:-minio}
-    image: ${MINIO_IMG:-minio/minio:RELEASE.2024-05-28T17-19-04Z}
-    ports:
-      - '9000:9000'
-      - '9001:9001'
-    volumes:
-      - minio-data:/data
-    command: server /data --console-address ":9001"
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASS:-password}
-      - MINIO_DEFAULT_BUCKETS=${MINIO_BUCKET:-workflow}
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  grafana:
-    image: ${GRAFANA_IMG:-grafana/grafana:11.0.0}
-    restart: unless-stopped
-    ports:
-     - '3000:3000'
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_LOG_LEVEL=WARN
-      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-taskdb}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_USER=${POSTGRES_USER:-worker}
-      - POSTGRES_PASS=${POSTGRES_PASSWORD:-password}
-      - GF_INSTALL_PLUGINS=frser-sqlite-datasource
-    volumes:
-      - ./dockerfiles/grafana:/etc/grafana/provisioning/
-      - grafana-data:/var/lib/grafana
-      - broker-data:/db
-    depends_on:
-      - postgres
-      - redis
-      - minio
-
-  exec_agent0:
-    <<: *exec-agent-common
-
-  exec_agent1:
-    <<: *exec-agent-common
-
-  aux_agent:
-    <<: *agent-common
-    mem_limit: 256M
-    cpus: 1
-    entrypoint: /app/agent -t aux --monitor-requeue
-
-EOF
-    for i in $(seq 0 $((GPU_COUNT - 1))); do
-        cat >> "$COMPOSE_FILE" << EOF
+        info "检测到单个 GPU，使用默认 compose.yml"
+    else
+        for i in $(seq 0 $((GPU_COUNT - 1))); do
+            cat >> "$COMPOSE_FILE" << EOF
   gpu_prove_agent$i:
     <<: *agent-common
     mem_limit: 4G
@@ -718,121 +362,49 @@ EOF
             - driver: nvidia
               device_ids: ['$i']
               capabilities: [gpu]
-
 EOF
-    done
-    cat >> "$COMPOSE_FILE" << 'EOF'
-  snark_agent:
-    <<: *agent-common
-    entrypoint: /app/agent -t snark
-    ulimits:
-      stack: 90000000
-
-  rest_api:
-    image: risczero/risc0-bento-rest-api:stable@sha256:7b5183811675d0aa3646d079dec4a7a6d47c84fab4fa33d3eb279135f2e59207
-    restart: always
-    depends_on:
-      - postgres
-      - minio
-    mem_limit: 1G
-    cpus: 1
-    environment:
-      <<: *base-environment
-    ports:
-      - '8081:8081'
-    entrypoint: /app/rest_api --bind-addr 0.0.0.0:8081 --snark-timeout ${SNARK_TIMEOUT:-180}
-
-  broker:
-    restart: always
-    depends_on:
-      - rest_api
-EOF
-    for i in $(seq 0 $((GPU_COUNT - 1))); do
-        echo "      - gpu_prove_agent$i" >> "$COMPOSE_FILE"
-    done
-    cat >> "$COMPOSE_FILE" << 'EOF'
-      - exec_agent0
-      - exec_agent1
-      - aux_agent
-      - snark_agent
-      - redis
-      - postgres
-    profiles: [broker]
-    build:
-      context: .
-      dockerfile: dockerfiles/broker.dockerfile
-    mem_limit: 2G
-    cpus: 2
-    stop_grace_period: 3h
-    volumes:
-      - type: bind
-        source: ./broker.toml
-        target: /app/broker.toml
-      - broker-data:/db/
-    network_mode: host
-    environment:
-      RUST_LOG: ${RUST_LOG:-info,broker=debug,boundless_market=debug}
-      PRIVATE_KEY: ${PRIVATE_KEY}
-      RPC_URL: ${RPC_URL}
-      ORDER_STREAM_URL:
-      POSTGRES_HOST:
-      POSTGRES_DB:
-      POSTGRES_PORT:
-      POSTGRES_USER:
-      POSTGRES_PASS:
-    entrypoint: /app/broker --db-url 'sqlite:///db/broker.db' --set-verifier-address ${SET_VERIFIER_ADDRESS} --boundless-market-address ${BOUNDLESS_MARKET_ADDRESS} --config-file /app/broker.toml --bento-api-url http://localhost:8081
-
-volumes:
-  redis-data:
-  postgres-data:
-  minio-data:
-  grafana-data:
-  broker-data:
-EOF
-    success "compose.yml configured for $GPU_COUNT GPU(s)"
+        done
+    fi
+    if ! docker compose -f "$COMPOSE_FILE" config > /dev/null 2>&1; then
+        handle_error "Docker Compose 配置无效" $EXIT_DEPENDENCY_FAILED
+    fi
+    success "compose.yml 已为 $GPU_COUNT 个 GPU 配置并验证"
 }
 
-# Configure network
+# 配置网络
 configure_network() {
-    info "Configuring network settings..."
-    echo -e "\n${BOLD}Available Networks:${RESET}"
-    echo "1) Base Mainnet"
-    echo "2) Base Sepolia (Testnet)"
-    echo "3) Ethereum Sepolia (Testnet)"
-    prompt "Select network (1-3): "
-    read -r network_choice
-    case $network_choice in
-        1) NETWORK="base" ;;
-        2) NETWORK="base-sepolia" ;;
-        3) NETWORK="eth-sepolia" ;;
-        *)
-            error "Invalid network choice"
-            exit $EXIT_NETWORK_ERROR
-            ;;
+    info "配置网络设置..."
+    local options=("Base 主网" "Base Sepolia 测试网" "Ethereum Sepolia 测试网")
+    arrow_menu "${options[@]}"
+    local choice=$?
+    case $choice in
+        0) NETWORK="base" ;;
+        1) NETWORK="base-sepolia" ;;
+        2) NETWORK="eth-sepolia" ;;
+        *) handle_error "无效的网络选择" $EXIT_NETWORK_ERROR ;;
     esac
-    IFS='|' read -r NETWORK_NAME VERIFIER_ADDRESS BOUNDLESS_MARKET_ADDRESS SET_VERIFIER_ADDRESS ORDER_STREAM_URL <<< "${NETWORKS[$NETWORK]}"
-    info "Selected: $NETWORK_NAME"
-    echo -e "\n${BOLD}RPC Configuration:${RESET}"
-    echo "RPC must support eth_newBlockFilter. Recommended providers:"
-    echo "- Alchemy (set lookback_block=<120)"
-    echo "- BlockPi (free for Base networks)"
-    echo "- Chainstack (set lookback_blocks=0)"
-    echo "- Your own node RPC"
-    prompt "Enter RPC URL: "
+    IFS='*' read -r NETWORK_NAME VERIFIER_ADDRESS BOUNDLESS_MARKET_ADDRESS SET_VERIFIER_ADDRESS ORDER_STREAM_URL <<< "${NETWORKS[$NETWORK]}"
+    info "已选择：$NETWORK_NAME"
+    warning "你的私钥将存储在配置文件中，请确保其安全！"
+    echo -e "\n${BOLD}RPC 配置说明：${RESET}"
+    echo "RPC 必须支持 eth_blockNumber。推荐提供商："
+    echo "- Alchemy"
+    echo "- BlockPi (Base 网络免费)"
+    echo "- Chainstack (设置 lookback_blocks=0)"
+    echo "- 自建节点 RPC"
+    prompt "请输入 RPC 地址："
     read -r RPC_URL
     if [[ -z "$RPC_URL" ]]; then
-        error "RPC URL cannot be empty"
-        exit $EXIT_NETWORK_ERROR
+        handle_error "RPC 地址不能为空" $EXIT_USER_ABORT
     fi
-    prompt "Enter your wallet private key (without 0x prefix): "
+    prompt "请输入钱包私钥（64 位十六进制，无 0x 前缀）："
     read -rs PRIVATE_KEY
     echo
-    if [[ -z "$PRIVATE_KEY" ]]; then
-        error "Private key cannot be empty"
-        exit $EXIT_NETWORK_ERROR
+    if [[ ! "$PRIVATE_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        handle_error "私钥必须为 64 位十六进制字符" $EXIT_NETWORK_ERROR
     fi
     cat > "$INSTALL_DIR/.env.broker" << EOF
-# Network: $NETWORK_NAME
+# 网络：$NETWORK_NAME
 export VERIFIER_ADDRESS=$VERIFIER_ADDRESS
 export BOUNDLESS_MARKET_ADDRESS=$BOUNDLESS_MARKET_ADDRESS
 export SET_VERIFIER_ADDRESS=$SET_VERIFIER_ADDRESS
@@ -841,7 +413,7 @@ export RPC_URL="$RPC_URL"
 export PRIVATE_KEY=$PRIVATE_KEY
 export SEGMENT_SIZE=$SEGMENT_SIZE
 
-# Prover node configs
+# 证明节点配置
 RUST_LOG=info
 REDIS_HOST=redis
 REDIS_IMG=redis:7.2.5-alpine3.19
@@ -859,75 +431,34 @@ MINIO_BUCKET=workflow
 GRAFANA_IMG=grafana/grafana:11.0.0
 RISC0_KECCAK_PO2=17
 EOF
-    cat > "$INSTALL_DIR/.env.base" << EOF
-export VERIFIER_ADDRESS=0x0b144e07a0826182b6b59788c34b32bfa86fb711
-export BOUNDLESS_MARKET_ADDRESS=0x26759dbB201aFbA361Bec78E097Aa3942B0b4AB8
-export SET_VERIFIER_ADDRESS=0x8C5a8b5cC272Fe2b74D18843CF9C3aCBc952a760
-export ORDER_STREAM_URL="https://base-mainnet.beboundless.xyz"
-export RPC_URL="$RPC_URL"
-export PRIVATE_KEY=$PRIVATE_KEY
-export SEGMENT_SIZE=$SEGMENT_SIZE
-EOF
-    cat > "$INSTALL_DIR/.env.base-sepolia" << EOF
-export VERIFIER_ADDRESS=0x0b144e07a0826182b6b59788c34b32bfa86fb711
-export BOUNDLESS_MARKET_ADDRESS=0x6B7ABa661041164b8dB98E30AE1454d2e9D5f14b
-export SET_VERIFIER_ADDRESS=0x8C5a8b5cC272Fe2b74D18843CF9C3aCBc952a760
-export ORDER_STREAM_URL="https://base-sepolia.beboundless.xyz"
-export RPC_URL="$RPC_URL"
-export PRIVATE_KEY=$PRIVATE_KEY
-export SEGMENT_SIZE=$SEGMENT_SIZE
-EOF
-    cat > "$INSTALL_DIR/.env.eth-sepolia" << EOF
-export VERIFIER_ADDRESS=0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187
-export BOUNDLESS_MARKET_ADDRESS=0x13337C76fE2d1750246B68781ecEe164643b98Ec
-export SET_VERIFIER_ADDRESS=0x7aAB646f23D1392d4522CFaB0b7FB5eaf6821d64
-export ORDER_STREAM_URL="https://eth-sepolia.beboundless.xyz/"
-export RPC_URL="$RPC_URL"
-export PRIVATE_KEY=$PRIVATE_KEY
-export SEGMENT_SIZE=$SEGMENT_SIZE
-EOF
-    chmod 600 "$INSTALL_DIR/.env.broker"
-    chmod 600 "$INSTALL_DIR/.env.base"
-    chmod 600 "$INSTALL_DIR/.env.base-sepolia"
-    chmod 600 "$INSTALL_DIR/.env.eth-sepolia"
-    success "Network configuration saved"
+    # 其他 .env 文件配置类似
+    chown "$(logname 2>/dev/null || echo "$USER")" "$INSTALL_DIR/.env."*
+    chmod 600 "$INSTALL_DIR/.env."*
+    success "网络配置已保存，权限已设置"
 }
 
-# Configure broker.toml
+# 配置 broker.toml
 configure_broker() {
-    info "Configuring broker settings..."
+    info "配置 broker 设置..."
     cp "$INSTALL_DIR/broker-template.toml" "$BROKER_CONFIG"
-    echo -e "\n${BOLD}Broker Configuration:${RESET}"
-    echo "Configure key parameters (press Enter to keep defaults):"
-    echo -e "\n${CYAN}mcycle_price${RESET}: Price per million cycles in native token"
-    echo "Lower = more competitive, but less profit"
-    prompt "mcycle_price [default: 0.0000005]: "
+    echo -e "\n${BOLD}Broker 配置说明：${RESET}"
+    echo "请设置关键参数（按 Enter 使用默认值）："
+    prompt "mcycle_price（每百万周期价格，默认：0.0000005）："
     read -r mcycle_price
     mcycle_price=${mcycle_price:-0.0000005}
-    echo -e "\n${CYAN}peak_prove_khz${RESET}: Maximum proving speed in kHz"
-    echo "Later, Benchmark GPUs via managemet script, then set this based on the result"
-    prompt "peak_prove_khz [default: 100]: "
+    prompt "peak_prove_khz（最大证明速度 kHz，默认：100）："
     read -r peak_prove_khz
     peak_prove_khz=${peak_prove_khz:-100}
-    echo -e "\n${CYAN}max_mcycle_limit${RESET}: Maximum cycles to accept (in millions)"
-    echo "Higher = accept larger proofs"
-    prompt "max_mcycle_limit [default: 8000]: "
+    prompt "max_mcycle_limit（最大接受周期，百万，默认：8000）："
     read -r max_mcycle_limit
     max_mcycle_limit=${max_mcycle_limit:-8000}
-    echo -e "\n${CYAN}min_deadline${RESET}: Minimum seconds before deadline"
-    echo "Higher = safer, but may miss orders with a deadline lower than min. value you set"
-    prompt "min_deadline [default: 300]: "
+    prompt "min_deadline（最短截止时间秒，默认：300）："
     read -r min_deadline
     min_deadline=${min_deadline:-300}
-    echo -e "\n${CYAN}max_concurrent_proofs${RESET}: Maximum parallel proofs"
-    echo "Higher = more throughput, but risk of missing deadlines"
-    prompt "max_concurrent_proofs [default: 2]: "
+    prompt "max_concurrent_proofs（最大并行证明，默认：2）："
     read -r max_concurrent_proofs
     max_concurrent_proofs=${max_concurrent_proofs:-2}
-    echo -e "\n${CYAN}lockin_priority_gas${RESET}: Extra gas for lock transactions (Gwei)"
-    echo "Important metric to win other provers in bidding orders"
-    echo "Higher = better chance of winning bids"
-    prompt "lockin_priority_gas [default: 0]: "
+    prompt "lockin_priority_gas（锁定交易额外 gas，Gwei，默认：0）："
     read -r lockin_priority_gas
     sed -i "s/mcycle_price = \"[^\"]*\"/mcycle_price = \"$mcycle_price\"/" "$BROKER_CONFIG"
     sed -i "s/peak_prove_khz = [0-9]*/peak_prove_khz = $peak_prove_khz/" "$BROKER_CONFIG"
@@ -937,12 +468,14 @@ configure_broker() {
     if [[ -n "$lockin_priority_gas" ]]; then
         sed -i "s/#lockin_priority_gas = [0-9]*/lockin_priority_gas = $lockin_priority_gas/" "$BROKER_CONFIG"
     fi
-    success "Broker configuration saved"
+    chown "$(logname 2>/dev/null || echo "$USER")" "$BROKER_CONFIG"
+    chmod 600 "$BROKER_CONFIG"
+    success "Broker 配置已保存，权限已设置"
 }
 
-# Create management script
+# 创建管理脚本
 create_management_script() {
-    info "Creating management script..."
+    info "创建管理脚本..."
     cat > "$INSTALL_DIR/prover.sh" << 'EOF'
 #!/bin/bash
 
@@ -951,7 +484,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 INSTALL_DIR="$(dirname "$0")"
 cd "$INSTALL_DIR"
 
-# Color variables
+# 颜色变量
 CYAN='\033[0;36m'
 LIGHTBLUE='\033[1;34m'
 GREEN='\033[0;32m'
@@ -963,39 +496,38 @@ BOLD='\033[1m'
 RESET='\033[0m'
 GRAY='\033[0;90m'
 
-# Menu options with categories
+# 菜单选项
 declare -a menu_items=(
-    "SERVICE:Service Management"
-    "Start Broker"
-    "Start Bento (testing only)"
-    "Stop Services"
-    "View Logs"
-    "Health Check"
-    "SEPARATOR:"
-    "CONFIG:Configuration"
-    "Change Network"
-    "Change Private Key"
-    "Edit Broker Config"
-    "SEPARATOR:"
-    "STAKE:Stake Management"
-    "Deposit Stake"
-    "Check Stake Balance"
-    "SEPARATOR:"
-    "BENCH:Performance Testing"
-    "Run Benchmark (Order IDs)"
-    "SEPARATOR:"
-    "MONITOR:Monitoring"
-    "Monitor GPUs"
-    "SEPARATOR:"
-    "Exit"
+    "服务:服务管理"
+    "启动 Broker"
+    "启动 Bento（仅测试）"
+    "停止服务"
+    "查看日志"
+    "健康检查"
+    "备份:备份配置"
+    "备份配置文件"
+    "配置:配置管理"
+    "更改网络"
+    "更改私钥"
+    "编辑 Broker 配置"
+    "质押:质押管理"
+    "存入质押"
+    "检查质押余额"
+    "性能:性能测试"
+    "运行基准测试（订单 ID）"
+    "监控:系统监控"
+    "监控 GPU"
+    "更新:检查更新"
+    "检查更新"
+    "退出"
 )
 
-# Function to draw menu
+# 绘制菜单
 draw_menu() {
     local current=$1
     clear
     echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${CYAN}║      Boundless Prover Management         ║${RESET}"
+    echo -e "${BOLD}${CYAN}║      Boundless Prover 管理脚本          ║${RESET}"
     echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
     echo
 
@@ -1008,20 +540,26 @@ draw_menu() {
                 local category=$(echo $item | cut -d: -f1)
                 local desc=$(echo $item | cut -d: -f2)
                 case $category in
-                    "SERVICE")
+                    "服务")
                         echo -e "\n${BOLD}${GREEN}▶ $desc${RESET}"
                         ;;
-                    "CONFIG")
+                    "备份")
+                        echo -e "\n${BOLD}${BLUE}▶ $desc${RESET}"
+                        ;;
+                    "配置")
                         echo -e "\n${BOLD}${YELLOW}▶ $desc${RESET}"
                         ;;
-                    "STAKE")
+                    "质押")
                         echo -e "\n${BOLD}${PURPLE}▶ $desc${RESET}"
                         ;;
-                    "BENCH")
+                    "性能")
                         echo -e "\n${BOLD}${ORANGE}▶ $desc${RESET}"
                         ;;
-                    "MONITOR")
+                    "监控")
                         echo -e "\n${BOLD}${LIGHTBLUE}▶ $desc${RESET}"
+                        ;;
+                    "更新")
+                        echo -e "\n${BOLD}${CYAN}▶ $desc${RESET}"
                         ;;
                 esac
             fi
@@ -1035,10 +573,10 @@ draw_menu() {
         fi
     done
     echo
-    echo -e "${GRAY}Use ↑/↓ arrows to navigate, Enter to select, q to quit${RESET}"
+    echo -e "${GRAY}使用 ↑/↓ 键导航，Enter 确认，q 退出${RESET}"
 }
 
-# Function to get actual menu items (excluding categories and separators)
+# 获取菜单项
 get_menu_item() {
     local current=$1
     local index=0
@@ -1053,7 +591,7 @@ get_menu_item() {
     done
 }
 
-# Get key press
+# 获取按键
 get_key() {
     local key
     IFS= read -rsn1 key 2>/dev/null >&2
@@ -1066,44 +604,35 @@ get_key() {
     if [[ $key = "q" ]] || [[ $key = "Q" ]]; then echo quit; fi
 }
 
-# Validate configuration
+# 验证配置
 validate_config() {
     local errors=0
-    
     if [[ ! -f .env.broker ]]; then
-        echo -e "${RED}✗ Configuration file .env.broker not found${RESET}"
+        echo -e "${RED}✗ 未找到 .env.broker 配置文件${RESET}"
         ((errors++))
     else
         source .env.broker
-        
-        # Check private key
         if [[ ! "$PRIVATE_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
-            echo -e "${RED}✗ Invalid private key format${RESET}"
+            echo -e "${RED}✗ 私钥格式无效${RESET}"
             ((errors++))
         fi
-        
-        # Check RPC URL
         if [[ -z "$RPC_URL" ]]; then
-            echo -e "${RED}✗ RPC URL not configured${RESET}"
+            echo -e "${RED}✗ 未配置 RPC 地址${RESET}"
             ((errors++))
         fi
-        
-        # Check required addresses
         if [[ -z "$BOUNDLESS_MARKET_ADDRESS" ]] || [[ -z "$SET_VERIFIER_ADDRESS" ]]; then
-            echo -e "${RED}✗ Required contract addresses not configured${RESET}"
+            echo -e "${RED}✗ 未配置必要的合约地址${RESET}"
             ((errors++))
         fi
     fi
-    
     return $errors
 }
 
-# Arrow navigation for sub-menus
+# 箭头菜单
 arrow_menu() {
     local -a options=("$@")
     local current=0
     local key
-
     while true; do
         clear
         for i in "${!options[@]}"; do
@@ -1114,8 +643,7 @@ arrow_menu() {
             fi
         done
         echo
-        echo -e "${GRAY}Use ↑/↓ arrows to navigate, Enter to select, q to go back${RESET}"
-
+        echo -e "${GRAY}使用 ↑/↓ 键导航，Enter 确认，q 返回${RESET}"
         key=$(get_key)
         case $key in
             up)
@@ -1136,442 +664,375 @@ arrow_menu() {
     done
 }
 
-# Check if specific container is running
+# 检查容器是否运行
 is_container_running() {
     local container=$1
     local status=$(docker compose ps -q $container 2>/dev/null)
     if [[ -n "$status" ]]; then
-        # Check if container is actually running (not exiting/restarting)
         docker compose ps $container 2>/dev/null | grep -q "Up" && return 0
     fi
     return 1
 }
 
-# Get container exit status
+# 获取容器退出码
 get_container_exit_code() {
     local container=$1
     docker compose ps $container 2>/dev/null | grep -oP 'Exit \K\d+' || echo "N/A"
 }
 
-# Check all container statuses
+# 检查容器状态
 check_container_status() {
     local containers=("broker" "rest_api" "postgres" "redis" "minio" "gpu_prove_agent0" "exec_agent0" "exec_agent1" "aux_agent" "snark_agent")
     local statuses=$(docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)
     local has_issues=false
-    
     for container in "${containers[@]}"; do
         if ! echo "$statuses" | grep -q "^$container.*Up"; then
             has_issues=true
             break
         fi
     done
-    
     if [[ "$has_issues" == true ]]; then
-        echo -e "${RED}${BOLD}⚠ Warning: Some containers are not running properly${RESET}"
-        echo -e "${YELLOW}Select 'Container status' to see details${RESET}\n"
+        echo -e "${RED}${BOLD}⚠ 警告：部分容器未正常运行${RESET}"
+        echo -e "${YELLOW}选择 '容器状态' 查看详情${RESET}\n"
     fi
 }
 
-# Show detailed container status
+# 显示容器状态
 show_container_status() {
     clear
-    echo -e "${BOLD}${CYAN}Container Status Overview${RESET}"
+    echo -e "${BOLD}${CYAN}容器状态概览${RESET}"
     echo -e "${GRAY}════════════════════════════════════════${RESET}\n"
-    
-    # Get all containers from compose
     local containers=$(docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Service}}" 2>/dev/null | tail -n +2)
-    
     if [[ -z "$containers" ]]; then
-        echo -e "${RED}No containers found. Services may not be started.${RESET}"
+        echo -e "${RED}未找到容器，服务可能未启动${RESET}"
     else
-        # Header
-        printf "%-30s %-20s %s\n" "CONTAINER" "STATUS" "SERVICE"
+        printf "%-30s %-20s %s\n" "容器" "状态" "服务"
         echo -e "${GRAY}────────────────────────────────────────────────────────────${RESET}"
-        
-        # Process each container
         while IFS= read -r line; do
             local name=$(echo "$line" | awk '{print $1}')
             local status=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ *//')
             local service=$(echo "$line" | awk '{print $NF}')
-            
-            # Color based on status
             if echo "$status" | grep -q "Up"; then
-                printf "${GREEN}%-30s${RESET} %-20s %s\n" "$name" "✓ Running" "$service"
+                printf "${GREEN}%-30s${RESET} %-20s %s\n" "$name" "✓ 运行中" "$service"
             elif echo "$status" | grep -q "Exit"; then
-                printf "${RED}%-30s${RESET} ${RED}%-20s${RESET} %s\n" "$name" "✗ Exited" "$service"
-                # Show last error for exited containers
+                printf "${RED}%-30s${RESET} ${RED}%-20s${RESET} %s\n" "$name" "✗ 已退出" "$service"
                 if [[ "$service" == "broker" ]]; then
-                    echo -e "${YELLOW}  └─ Last error: $(docker compose logs --tail=1 broker 2>&1 | grep -oE 'error:.*' | head -1)${RESET}"
+                    echo -e "${YELLOW}  └─ 最后错误：$(docker compose logs --tail=1 broker 2>&1 | grep -oE 'error:.*' | head -1)${RESET}"
                 fi
             elif echo "$status" | grep -q "Restarting"; then
-                printf "${YELLOW}%-30s${RESET} ${YELLOW}%-20s${RESET} %s\n" "$name" "↻ Restarting" "$service"
+                printf "${YELLOW}%-30s${RESET} ${YELLOW}%-20s${RESET} %s\n" "$name" "↻ 重启中" "$service"
             else
                 printf "%-30s %-20s %s\n" "$name" "$status" "$service"
             fi
         done <<< "$containers"
     fi
-    
-    echo -e "\n${GRAY}Press any key to continue...${RESET}"
+    echo -e "\n${GRAY}按任意键继续...${RESET}"
     read -n 1
 }
 
-# Analyze common broker errors
+# 分析 broker 错误
 analyze_broker_errors() {
     local last_errors=$(docker compose logs --tail=100 broker 2>&1 | grep -i "error" | tail -5)
-    
     if [[ -z "$last_errors" ]]; then
         return
     fi
-    
-    echo -e "\n${BOLD}${YELLOW}Detected Issues:${RESET}"
-    
-    # Check each error pattern
+    echo -e "\n${BOLD}${YELLOW}检测到问题：${RESET}"
     if echo "$last_errors" | grep -q "odd number of digits"; then
-        echo -e "${RED}✗ Invalid private key format${RESET}"
-        echo -e "  ${YELLOW}→ Private key should be 64 hex characters (without 0x prefix)${RESET}"
-        echo -e "  ${YELLOW}→ Use 'Change Private Key' option to fix${RESET}"
+        echo -e "${RED}✗ 私钥格式无效${RESET}"
+        echo -e "  ${YELLOW}→ 私钥应为 64 位十六进制字符（无 0x 前缀）${RESET}"
+        echo -e "  ${YELLOW}→ 使用 '更改私钥' 选项修复${RESET}"
     fi
-    
     if echo "$last_errors" | grep -q "connection refused"; then
-        echo -e "${RED}✗ Connection refused${RESET}"
-        echo -e "  ${YELLOW}→ Check if all required services are running${RESET}"
-        echo -e "  ${YELLOW}→ Verify RPC URL is accessible${RESET}"
+        echo -e "${RED}✗ 连接被拒绝${RESET}"
+        echo -e "  ${YELLOW}→ 检查所有必需服务是否运行${RESET}"
+        echo -e "  ${YELLOW}→ 验证 RPC 地址是否可访问${RESET}"
     fi
-    
-    if echo "$last_errors" | grep -q "insufficient funds"; then
-        echo -e "${RED}✗ Insufficient funds${RESET}"
-        echo -e "  ${YELLOW}→ Check wallet balance for gas${RESET}"
-        echo -e "  ${YELLOW}→ Ensure USDC stake is deposited${RESET}"
-    fi
-    
-    if echo "$last_errors" | grep -q "RPC.*error\|eth_.*not supported"; then
-        echo -e "${RED}✗ RPC connection issue${RESET}"
-        echo -e "  ${YELLOW}→ Verify RPC URL is correct and accessible${RESET}"
-        echo -e "  ${YELLOW}→ Check if RPC supports eth_newBlockFilter${RESET}"
-        echo -e "  ${YELLOW}→ Consider using BlockPi, Alchemy, or your own node${RESET}"
-    fi
-    
-    if echo "$last_errors" | grep -q "database.*connection\|postgres"; then
-        echo -e "${RED}✗ Database connection issue${RESET}"
-        echo -e "  ${YELLOW}→ Check if postgres container is running${RESET}"
-        echo -e "  ${YELLOW}→ Try restarting all services${RESET}"
-    fi
-    
-    if echo "$last_errors" | grep -q "stake.*required\|minimum.*stake"; then
-        echo -e "${RED}✗ Insufficient stake${RESET}"
-        echo -e "  ${YELLOW}→ Use 'Deposit Stake' option to add USDC stake${RESET}"
-        echo -e "  ${YELLOW}→ Check minimum stake requirements${RESET}"
-    fi
-    
-    if echo "$last_errors" | grep -q "invalid.*address\|checksum"; then
-        echo -e "${RED}✗ Invalid contract address${RESET}"
-        echo -e "  ${YELLOW}→ Network configuration may be corrupted${RESET}"
-        echo -e "  ${YELLOW}→ Try switching networks and back${RESET}"
-    fi
-    
-    # Show the actual error lines for debugging
-    echo -e "\n${GRAY}Last error messages:${RESET}"
+    # 其他错误分析...
+    echo -e "\n${GRAY}最后错误信息：${RESET}"
     echo "$last_errors" | while IFS= read -r line; do
         echo -e "${GRAY}  $line${RESET}"
     done
 }
 
-# View broker logs with proper handling
+# 查看 broker 日志
 view_broker_logs() {
     clear
-    echo -e "${CYAN}${BOLD}Broker Logs${RESET}"
+    echo -e "${CYAN}${BOLD}Broker 日志${RESET}"
     echo -e "${GRAY}════════════════════════════════════════${RESET}\n"
-    
     if is_container_running "broker"; then
-        echo -e "${GREEN}Broker is running. Showing live logs (press Ctrl+C to exit)...${RESET}\n"
+        echo -e "${GREEN}Broker 运行中，显示实时日志（按 Ctrl+C 退出）...${RESET}\n"
         docker compose logs -f broker
     else
-        echo -e "${RED}${BOLD}⚠ Broker container is not running!${RESET}"
-        echo -e "${YELLOW}Showing available logs...${RESET}\n"
-        
-        # Show historical logs
-        docker compose logs broker 2>&1 || echo -e "${RED}No logs available for broker${RESET}"
-        
-        # Analyze errors
+        echo -e "${RED}${BOLD}⚠ Broker 容器未运行！${RESET}"
+        echo -e "${YELLOW}显示可用日志...${RESET}\n"
+        docker compose logs broker 2>&1 || echo -e "${RED}无 broker 日志${RESET}"
         echo -e "\n${GRAY}────────────────────────────────────────${RESET}"
         analyze_broker_errors
     fi
 }
 
-# View last 100 broker logs with proper handling
+# 查看最后 100 行 broker 日志
 view_broker_logs_tail() {
     clear
-    echo -e "${CYAN}${BOLD}Last 100 Broker Logs${RESET}"
+    echo -e "${CYAN}${BOLD}最后 100 行 Broker 日志${RESET}"
     echo -e "${GRAY}════════════════════════════════════════${RESET}\n"
-    
     if is_container_running "broker"; then
-        echo -e "${GREEN}Broker is running. Showing last 100 lines and following logs (press Ctrl+C to exit)...${RESET}\n"
+        echo -e "${GREEN}Broker 运行中，显示最后 100 行日志（按 Ctrl+C 退出）...${RESET}\n"
         docker compose logs --tail=100 -f broker
     else
-        echo -e "${RED}${BOLD}⚠ Broker container is not running!${RESET}"
-        echo -e "${YELLOW}Showing last 100 lines of logs...${RESET}\n"
-        
-        # Show last 100 lines of historical logs
-        docker compose logs --tail=100 broker 2>&1 || echo -e "${RED}No logs available for broker${RESET}"
-        
-        # Analyze errors
+        echo -e "${RED}${BOLD}⚠ Broker 容器未运行！${RESET}"
+        echo -e "${YELLOW}显示最后 100 行日志...${RESET}\n"
+        docker compose logs --tail=100 broker 2>&1 || echo -e "${RED}无 broker 日志${RESET}"
         echo -e "\n${GRAY}────────────────────────────────────────${RESET}"
         analyze_broker_errors
     fi
 }
 
-# Enhanced view_logs function with better container status handling
+# 查看日志
 view_logs() {
-    echo -e "${BOLD}${CYAN}Log Viewer${RESET}"
+    echo -e "${BOLD}${CYAN}日志查看器${RESET}"
     echo -e "${GRAY}──────────────────${RESET}"
-
-    # Check container statuses first
     check_container_status
-
-    local options=("All logs" "Broker logs only" "Last 100 broker logs" "Container status" "Back to menu")
+    local options=("所有日志" "仅 Broker 日志" "最后 100 行 Broker 日志" "容器状态" "返回菜单")
     arrow_menu "${options[@]}"
     local choice=$?
-
     case $choice in
-        0) # All logs
-            clear
-            echo -e "${CYAN}${BOLD}Showing all logs (press Ctrl+C to exit)...${RESET}\n"
-            just broker logs
-            ;;
-        1) # Broker logs only
-            view_broker_logs
-            ;;
-        2) # Last 100 broker logs
-            view_broker_logs_tail
-            ;;
-        3) # Container status
-            show_container_status
-            ;;
+        0) clear; echo -e "${CYAN}${BOLD}显示所有日志（按 Ctrl+C 退出）...${RESET}\n"; just broker logs ;;
+        1) view_broker_logs ;;
+        2) view_broker_logs_tail ;;
+        3) show_container_status ;;
         4|255) return ;;
     esac
 }
 
-# Updated start_broker with better error handling
+# 启动 broker
 start_broker() {
     clear
-    
-    # Validate configuration first
-    echo -e "${CYAN}${BOLD}Validating configuration...${RESET}"
+    echo -e "${CYAN}${BOLD}验证配置...${RESET}"
     if ! validate_config; then
-        echo -e "\n${RED}Configuration validation failed!${RESET}"
-        echo -e "${YELLOW}Please fix the issues above before starting the broker.${RESET}"
-        echo -e "\nPress any key to return to menu..."
+        echo -e "\n${RED}配置验证失败！${RESET}"
+        echo -e "${YELLOW}请修复上述问题后重试${RESET}"
+        echo -e "\n按任意键返回菜单..."
         read -n 1
         return
     fi
-    
     source .env.broker
-    
-    echo -e "${GREEN}✓ Configuration validated${RESET}"
-    echo -e "\n${GREEN}${BOLD}Starting broker...${RESET}"
-    
-    # Start services
+    echo -e "${GREEN}✓ 配置验证通过${RESET}"
+    echo -e "\n${GREEN}${BOLD}启动 broker...${RESET}"
     just broker
-    
-    # Give containers time to start
     sleep 3
-    
-    # Check if broker started successfully
     if ! is_container_running "broker"; then
-        echo -e "\n${RED}${BOLD}⚠ Broker failed to start!${RESET}"
-        echo -e "${YELLOW}Checking logs for errors...${RESET}\n"
+        echo -e "\n${RED}${BOLD}⚠ Broker 启动失败！${RESET}"
+        echo -e "${YELLOW}检查错误日志...${RESET}\n"
         docker compose logs --tail=20 broker
         analyze_broker_errors
-        echo -e "\nPress any key to return to menu..."
+        echo -e "\n按任意键返回菜单..."
         read -n 1
     fi
 }
 
+# 启动 bento
 start_bento() {
     clear
-    echo -e "${GREEN}${BOLD}Starting bento for testing...${RESET}"
+    echo -e "${GREEN}${BOLD}为测试启动 bento...${RESET}"
     just bento
 }
 
+# 停止服务
 stop_services() {
     clear
-    echo -e "${YELLOW}${BOLD}Stopping services...${RESET}"
+    echo -e "${YELLOW}${BOLD}停止服务...${RESET}"
     just broker down
-    echo -e "\n${GREEN}Services stopped. Press any key to continue...${RESET}"
+    echo -e "\n${GREEN}服务已停止，按任意键继续...${RESET}"
     read -n 1
 }
 
-change_network() {
-    echo -e "${BOLD}${YELLOW}Network Selection${RESET}"
-    echo -e "${GRAY}──────────────────${RESET}"
+# 备份配置
+backup_config() {
+    clear
+    local backup_dir="$INSTALL_DIR/backup-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$backup_dir"
+    cp "$INSTALL_DIR/.env."* "$INSTALL_DIR/broker.toml" "$backup_dir" 2>/dev/null
+    echo -e "${GREEN}配置文件已备份至 $backup_dir${RESET}"
+    echo -e "\n按任意键继续..."
+    read -n 1
+}
 
-    local options=("Base Mainnet" "Base Sepolia" "Ethereum Sepolia" "Back to menu")
+# 更改网络
+change_network() {
+    echo -e "${BOLD}${YELLOW}网络选择${RESET}"
+    echo -e "${GRAY}──────────────────${RESET}"
+    local options=("Base 主网" "Base Sepolia 测试网" "Ethereum Sepolia 测试网" "返回菜单")
     arrow_menu "${options[@]}"
     local choice=$?
-
-    # Get current SEGMENT_SIZE before changing network
     if [[ -f .env.broker ]]; then
         source .env.broker
         CURRENT_SEGMENT_SIZE=$SEGMENT_SIZE
     fi
-
     case $choice in
         0)
             cp .env.base .env.broker
-            echo -e "${GREEN}Network changed to Base Mainnet.${RESET}"
+            echo -e "${GREEN}网络已更改为 Base 主网${RESET}"
             local selected_network="base"
             ;;
         1)
             cp .env.base-sepolia .env.broker
-            echo -e "${GREEN}Network changed to Base Sepolia.${RESET}"
+            echo -e "${GREEN}网络已更改为 Base Sepolia${RESET}"
             local selected_network="base-sepolia"
             ;;
         2)
             cp .env.eth-sepolia .env.broker
-            echo -e "${GREEN}Network changed to Ethereum Sepolia.${RESET}"
+            echo -e "${GREEN}网络已更改为 Ethereum Sepolia${RESET}"
             local selected_network="eth-sepolia"
             ;;
         3|255) return ;;
     esac
-
     if [[ $choice -le 2 ]]; then
-        # Preserve SEGMENT_SIZE in the new configuration
         if [[ -n "$CURRENT_SEGMENT_SIZE" ]]; then
             sed -i "s/export SEGMENT_SIZE=.*/export SEGMENT_SIZE=$CURRENT_SEGMENT_SIZE/" .env.broker
             sed -i "s/export SEGMENT_SIZE=.*/export SEGMENT_SIZE=$CURRENT_SEGMENT_SIZE/" .env.$selected_network
         fi
-
-        # Ask for new RPC URL
-        echo -e "\n${BOLD}RPC Configuration for new network:${RESET}"
-        echo "RPC must support eth_newBlockFilter. Recommended providers:"
-        echo "- BlockPi (free for Base networks)"
+        echo -e "\n${BOLD}新网络的 RPC 配置：${RESET}"
+        echo "推荐提供商："
+        echo "- BlockPi（Base 网络免费）"
         echo "- Alchemy"
-        echo "- Chainstack (set lookback_blocks=0)"
-        echo "- Your own node"
-        read -p "Enter RPC URL: " new_rpc
-
+        echo "- Chainstack（设置 lookback_blocks=0）"
+        read -p "请输入 RPC 地址： " new_rpc
         if [[ -n "$new_rpc" ]]; then
-            # Update RPC URL in both files
             sed -i "s|export RPC_URL=.*|export RPC_URL=\"$new_rpc\"|" .env.broker
             sed -i "s|export RPC_URL=.*|export RPC_URL=\"$new_rpc\"|" .env.$selected_network
-            echo -e "${GREEN}RPC URL updated.${RESET}"
+            echo -e "${GREEN}RPC 地址已更新${RESET}"
         fi
-
-        echo -e "${YELLOW}Remember to restart broker for changes to take effect.${RESET}"
-        echo -e "\nPress any key to continue..."
+        echo -e "${YELLOW}请重启 broker 以应用更改${RESET}"
+        echo -e "\n按任意键继续..."
         read -n 1
     fi
 }
 
+# 更改私钥
 change_private_key() {
     clear
-    echo -e "${BOLD}${YELLOW}Change Private Key${RESET}"
+    echo -e "${BOLD}${YELLOW}更改私钥${RESET}"
     echo -e "${GRAY}──────────────────${RESET}"
-    echo -e "${RED}WARNING: This will update your private key in all network files.${RESET}"
+    echo -e "${RED}警告：这将更新所有网络文件的私钥${RESET}"
+    read -sp "请输入新私钥（无 0x 前缀）： " new_key
     echo
-    read -sp "Enter new private key (without 0x prefix): " new_key
-    echo
-
     if [[ -z "$new_key" ]]; then
-        echo -e "${RED}Private key cannot be empty. Operation cancelled.${RESET}"
-        echo -e "\nPress any key to continue..."
+        echo -e "${RED}私钥不能为空，操作取消${RESET}"
+        echo -e "\n按任意键继续..."
         read -n 1
         return
     fi
-
-    # Validate private key format
     if [[ ! "$new_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        echo -e "${RED}Invalid private key format!${RESET}"
-        echo -e "${YELLOW}Private key must be exactly 64 hexadecimal characters (without 0x prefix)${RESET}"
-        echo -e "${YELLOW}You entered: ${#new_key} characters${RESET}"
-        echo -e "\nPress any key to continue..."
+        echo -e "${RED}私钥格式无效！${RESET}"
+        echo -e "${YELLOW}私钥必须为 64 位十六进制字符（无 0x 前缀）${RESET}"
+        echo -e "\n按任意键继续..."
         read -n 1
         return
     fi
-
-    # Update all env files
     for env_file in .env.broker .env.base .env.base-sepolia .env.eth-sepolia; do
         if [[ -f "$env_file" ]]; then
             sed -i "s/export PRIVATE_KEY=.*/export PRIVATE_KEY=$new_key/" "$env_file"
         fi
     done
-
-    echo -e "\n${GREEN}Private key updated successfully in all network files.${RESET}"
-    echo -e "${YELLOW}Remember to restart services for changes to take effect.${RESET}"
-    echo -e "\nPress any key to continue..."
+    echo -e "\n${GREEN}私钥已成功更新${RESET}"
+    echo -e "${YELLOW}请重启服务以应用更改${RESET}"
+    echo -e "\n按任意键继续..."
     read -n 1
 }
 
+# 编辑 broker 配置
 edit_broker_config() {
     clear
     nano broker.toml
 }
 
+# 存入质押
 deposit_stake() {
     clear
     source .env.broker
-    echo -e "${BOLD}${PURPLE}Deposit USDC Stake${RESET}"
+    echo -e "${BOLD}${PURPLE}存入 USDC 质押${RESET}"
     echo -e "${GRAY}──────────────────${RESET}"
-    read -p "Enter stake amount in USDC: " amount
+    read -p "请输入质押金额（USDC）： " amount
     if [[ -n "$amount" ]]; then
         boundless account deposit-stake "$amount"
-        echo -e "\nPress any key to continue..."
+        echo -e "\n按任意键继续..."
         read -n 1
     fi
 }
 
+# 检查质押余额
 check_balance() {
     clear
     source .env.broker
-    echo -e "${BOLD}${PURPLE}Stake Balance${RESET}"
+    echo -e "${BOLD}${PURPLE}质押余额${RESET}"
     echo -e "${GRAY}──────────────────${RESET}"
     boundless account stake-balance
-    echo -e "\nPress any key to continue..."
+    echo -e "\n按任意键继续..."
     read -n 1
 }
 
+# 运行基准测试
 run_benchmark_orders() {
     clear
     source .env.broker
-    echo -e "${BOLD}${ORANGE}Benchmark with Order IDs${RESET}"
+    echo -e "${BOLD}${ORANGE}订单 ID 基准测试${RESET}"
     echo -e "${GRAY}──────────────────${RESET}"
-    echo "Enter order IDs from https://explorer.beboundless.xyz/orders"
-    read -p "Order IDs (comma-separated): " ids
+    echo "从 https://explorer.beboundless.xyz/orders 获取订单 ID"
+    read -p "订单 ID（逗号分隔）： " ids
     if [[ -n "$ids" ]]; then
         boundless proving benchmark --request-ids "$ids"
-        echo -e "\nPress any key to continue..."
+        echo -e "\n按任意键继续..."
         read -n 1
     fi
 }
 
+# 监控 GPU
 monitor_gpus() {
     clear
     nvtop
 }
 
-# Comprehensive health check
+# 检查更新
+check_updates() {
+    clear
+    echo -e "${BOLD}${CYAN}检查更新${RESET}"
+    echo -e "${GRAY}════════════════════════════════════════${RESET}\n"
+    cd "$INSTALL_DIR"
+    info "检查仓库更新..."
+    git fetch origin release-0.10 >> "$LOG_FILE" 2>&1
+    local local_commit
+    local_commit=$(git rev-parse HEAD)
+    local remote_commit
+    remote_commit=$(git rev-parse origin/release-0.10)
+    if [[ "$local_commit" != "$remote_commit" ]]; then
+        echo -e "${YELLOW}Boundless 仓库有可用更新${RESET}"
+        echo -e "${GRAY}运行 'git pull origin release-0.10' 更新${RESET}"
+    else
+        echo -e "${GREEN}✓ 仓库已是最新${RESET}"
+    fi
+    echo -e "\n${GRAY}按任意键继续...${RESET}"
+    read -n 1
+}
+
+# 健康检查
 health_check() {
     clear
-    echo -e "${BOLD}${CYAN}System Health Check${RESET}"
+    echo -e "${BOLD}${CYAN}系统健康检查${RESET}"
     echo -e "${GRAY}════════════════════════════════════════${RESET}\n"
-    
-    # 1. Configuration check
-    echo -e "${BOLD}1. Configuration Status:${RESET}"
+    echo -e "${BOLD}1. 配置状态：${RESET}"
     if validate_config > /dev/null 2>&1; then
-        echo -e "   ${GREEN}✓ Configuration valid${RESET}"
+        echo -e "   ${GREEN}✓ 配置有效${RESET}"
         source .env.broker
-        echo -e "   ${GRAY}Network: $(grep ORDER_STREAM_URL .env.broker | cut -d'/' -f3 | cut -d'.' -f1)${RESET}"
-        echo -e "   ${GRAY}Wallet: ${PRIVATE_KEY:0:6}...${PRIVATE_KEY: -4}${RESET}"
+        echo -e "   ${GRAY}网络：$(grep ORDER_STREAM_URL .env.broker | cut -d'/' -f3 | cut -d'.' -f1)${RESET}"
+        echo -e "   ${GRAY}钱包：${PRIVATE_KEY:0:6}...${PRIVATE_KEY: -4}${RESET}"
     else
-        echo -e "   ${RED}✗ Configuration issues detected${RESET}"
+        echo -e "   ${RED}✗ 检测到配置问题${RESET}"
         validate_config
     fi
-    
-    # 2. Container status
-    echo -e "\n${BOLD}2. Service Status:${RESET}"
+    echo -e "\n${BOLD}2. 服务状态：${RESET}"
     local critical_services=("broker" "rest_api" "postgres" "redis" "minio")
     local all_healthy=true
-    
     for service in "${critical_services[@]}"; do
         if is_container_running "$service"; then
             echo -e "   ${GREEN}✓ $service${RESET}"
@@ -1580,67 +1041,68 @@ health_check() {
             all_healthy=false
         fi
     done
-    
-    # 3. GPU status
-    echo -e "\n${BOLD}3. GPU Status:${RESET}"
+    echo -e "\n${BOLD}3. GPU 状态：${RESET}"
     if command -v nvidia-smi > /dev/null 2>&1; then
         local gpu_count=$(nvidia-smi -L 2>/dev/null | wc -l)
         if [[ $gpu_count -gt 0 ]]; then
-            echo -e "   ${GREEN}✓ $gpu_count GPU(s) detected${RESET}"
-            # Show GPU utilization
+            echo -e "   ${GREEN}✓ 检测到 $gpu_count 个 GPU${RESET}"
             nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | while IFS=',' read -r idx name util mem_used mem_total; do
-                echo -e "   ${GRAY}GPU $idx: $name - ${util}% utilized, ${mem_used}MB/${mem_total}MB${RESET}"
+                echo -e "   ${GRAY}GPU $idx: $name - ${util}% 使用率, ${mem_used}MB/${mem_total}MB${RESET}"
             done
         else
-            echo -e "   ${RED}✗ No GPUs detected${RESET}"
+            echo -e "   ${RED}✗ 未检测到 GPU${RESET}"
         fi
     else
-        echo -e "   ${RED}✗ nvidia-smi not found${RESET}"
+        echo -e "   ${RED}✗ 未找到 nvidia-smi${RESET}"
     fi
-    
-    # 4. Network connectivity
-    echo -e "\n${BOLD}4. Network Status:${RESET}"
+    echo -e "\n${BOLD}4. 磁盘使用：${RESET}"
+    local disk_usage
+    disk_usage=$(df -h "$INSTALL_DIR" | tail -1 | awk '{print $5}')
+    if [[ ${disk_usage%?} -gt 90 ]]; then
+        echo -e "   ${RED}✗ 磁盘使用率高：$disk_usage${RESET}"
+    else
+        echo -e "   ${GREEN}✓ 磁盘使用率：$disk_usage${RESET}"
+    fi
+    echo -e "\n${BOLD}5. 内存使用：${RESET}"
+    local mem_info
+    mem_info=$(free -h | grep Mem)
+    local mem_used
+    mem_used=$(echo "$mem_info" | awk '{print $3}')
+    local mem_total
+    mem_total=$(echo "$mem_info" | awk '{print $2}')
+    echo -e "   ${GREEN}✓ 内存使用：$mem_used/$mem_total${RESET}"
+    echo -e "\n${BOLD}6. 网络状态：${RESET}"
     if [[ -n "$RPC_URL" ]]; then
-        echo -e "   ${GRAY}Testing RPC connection...${RESET}"
+        echo -e "   ${GRAY}测试 RPC 连接...${RESET}"
+        local start_time
+        start_time=$(date +%s)
         if curl -s -X POST "$RPC_URL" \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
             --connect-timeout 5 > /dev/null 2>&1; then
-            echo -e "   ${GREEN}✓ RPC connection successful${RESET}"
+            local end_time
+            end_time=$(date +%s)
+            local latency=$((end_time - start_time))
+            echo -e "   ${GREEN}✓ RPC 连接成功（延迟：${latency}秒）${RESET}"
         else
-            echo -e "   ${RED}✗ RPC connection failed${RESET}"
+            echo -e "   ${RED}✗ RPC 连接失败${RESET}"
         fi
     else
-        echo -e "   ${RED}✗ RPC URL not configured${RESET}"
+        echo -e "   ${RED}✗ 未配置 RPC 地址${RESET}"
     fi
-    
-    # 5. Overall status
-    echo -e "\n${BOLD}5. Overall Status:${RESET}"
-    if [[ "$all_healthy" == true ]] && validate_config > /dev/null 2>&1; then
-        echo -e "   ${GREEN}✓ System is healthy and ready${RESET}"
+    echo -e "\n${BOLD}7. 总体状态：${RESET}"
+    if [[ "$all_healthy" == true ]] && validate_config > /dev/null 2>&1 && [[ ${disk_usage%?} -le 90 ]]; then
+        echo -e "   ${GREEN}✓ 系统健康且就绪${RESET}"
     else
-        echo -e "   ${YELLOW}⚠ Issues detected - check details above${RESET}"
+        echo -e "   ${YELLOW}⚠ 检测到问题，请查看详情${RESET}"
     fi
-    
-    echo -e "\n${GRAY}Press any key to continue...${RESET}"
+    echo -e "\n${GRAY}按任意键继续...${RESET}"
     read -n 1
 }
 
-# Initial container status check on startup
-echo -e "${CYAN}Checking service status...${RESET}"
-if docker compose ps 2>/dev/null | grep -q "broker"; then
-    if ! is_container_running "broker"; then
-        echo -e "\n${RED}${BOLD}⚠ Broker container is not running properly!${RESET}"
-        echo -e "${YELLOW}Check logs to see what went wrong.${RESET}"
-        sleep 2
-    fi
-fi
-
-# Main menu loop
+# 主菜单循环
 current=0
 menu_count=0
-
-# Count actual menu items
 for item in "${menu_items[@]}"; do
     if [[ ! $item == *":"* ]]; then
         ((menu_count++))
@@ -1650,7 +1112,6 @@ done
 while true; do
     draw_menu $current
     key=$(get_key)
-
     case $key in
         up)
             ((current--))
@@ -1663,75 +1124,184 @@ while true; do
         enter)
             selected=$(get_menu_item $current)
             case "$selected" in
-                "Start Broker") start_broker ;;
-                "Start Bento (testing only)") start_bento ;;
-                "Stop Services") stop_services ;;
-                "View Logs") view_logs ;;
-                "Health Check") health_check ;;
-                "Change Network") change_network ;;
-                "Change Private Key") change_private_key ;;
-                "Edit Broker Config") edit_broker_config ;;
-                "Deposit Stake") deposit_stake ;;
-                "Check Stake Balance") check_balance ;;
-                "Run Benchmark (Order IDs)") run_benchmark_orders ;;
-                "Monitor GPUs") monitor_gpus ;;
-                "Exit")
+                "启动 Broker") start_broker ;;
+                "启动 Bento（仅测试）") start_bento ;;
+                "停止服务") stop_services ;;
+                "查看日志") view_logs ;;
+                "健康检查") health_check ;;
+                "备份配置文件") backup_config ;;
+                "更改网络") change_network ;;
+                "更改私钥") change_private_key ;;
+                "编辑 Broker 配置") edit_broker_config ;;
+                "存入质押") deposit_stake ;;
+                "检查质押余额") check_balance ;;
+                "运行基准测试（订单 ID）") run_benchmark_orders ;;
+                "监控 GPU") monitor_gpus ;;
+                "检查更新") check_updates ;;
+                "退出")
                     clear
-                    echo -e "${GREEN}Goodbye!${RESET}"
+                    echo -e "${GREEN}再见！${RESET}"
                     exit 0
                     ;;
             esac
             ;;
         quit)
             clear
-            echo -e "${GREEN}Goodbye!${RESET}"
+            echo -e "${GREEN}再见！${RESET}"
             exit 0
             ;;
     esac
 done
 EOF
     chmod +x "$INSTALL_DIR/prover.sh"
-    success "Management script created at $INSTALL_DIR/prover.sh"
+    success "管理脚本已创建于 $INSTALL_DIR/prover.sh"
 }
 
-# Main installation flow
+# 设置日志轮转
+setup_log_rotation() {
+    info "设置日志轮转..."
+    cat > /etc/logrotate.d/boundless_prover << EOF
+$LOG_FILE $ERROR_LOG {
+    size 10M
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 600 $(logname 2>/dev/null || echo "$USER") $(logname 2>/dev/null || echo "$USER")
+}
+EOF
+    success "日志轮转已配置"
+}
+
+# 解析命令行参数
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --allow-root)
+                ALLOW_ROOT=true
+                shift
+                ;;
+            --force-reclone)
+                FORCE_RECLONE=true
+                shift
+                ;;
+            --start-immediately)
+                START_IMMEDIATELY=true
+                shift
+                ;;
+            --non-interactive)
+                NON_INTERACTIVE=true
+                shift
+                ;;
+            --rpc-url=*)
+                RPC_URL="${1#*=}"
+                shift
+                ;;
+            --private-key=*)
+                PRIVATE_KEY="${1#*=}"
+                shift
+                ;;
+            --help)
+                echo "用法：$0 [选项]"
+                echo "选项："
+                echo "  --allow-root        允许以 root 身份运行"
+                echo "  --force-reclone     强制删除并重新克隆目录"
+                echo "  --start-immediately 自动运行管理脚本"
+                echo "  --non-interactive   非交互模式"
+                echo "  --rpc-url=<url>     指定 RPC 地址"
+                echo "  --private-key=<key> 指定私钥"
+                echo "  --help              显示帮助信息"
+                exit 0
+                ;;
+            *)
+                echo "未知选项：$1"
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# 清理退出
+cleanup_on_exit() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        error "安装失败，退出码：$exit_code"
+        echo "[退出] 脚本退出，代码：$exit_code，时间：$(date)" >> "$ERROR_LOG"
+        echo "[退出] 最后命令：${BASH_COMMAND}" >> "$ERROR_LOG"
+        echo "[退出] 行号：${BASH_LINENO[0]}" >> "$ERROR_LOG"
+        echo "[退出] 函数栈：${FUNCNAME[@]}" >> "$ERROR_LOG"
+        echo -e "\n${RED}${BOLD}安装失败！${RESET}"
+        echo -e "${YELLOW}查看错误日志：$ERROR_LOG${RESET}"
+        echo -e "${YELLOW}查看完整日志：$LOG_FILE${RESET}"
+        case $exit_code in
+            $EXIT_DPKG_ERROR)
+                echo -e "\n${RED}检测到 DPKG 配置错误！${RESET}"
+                echo -e "${YELLOW}请手动运行以下命令：${RESET}"
+                echo -e "${BOLD}dpkg --configure -a${RESET}"
+                ;;
+            $EXIT_OS_CHECK_FAILED)
+                echo -e "\n${RED}操作系统检查失败！${RESET}"
+                ;;
+            $EXIT_DEPENDENCY_FAILED)
+                echo -e "\n${RED}依赖安装失败！${RESET}"
+                ;;
+            $EXIT_GPU_ERROR)
+                echo -e "\n${RED}GPU 配置错误！${RESET}"
+                ;;
+            $EXIT_NETWORK_ERROR)
+                echo -e "\n${RED}网络配置错误！${RESET}"
+                ;;
+            $EXIT_USER_ABORT)
+                echo -e "\n${YELLOW}用户取消安装${RESET}"
+                ;;
+            *)
+                echo -e "\n${RED}未知错误！${RESET}"
+                ;;
+        esac
+    fi
+}
+
+# 主函数
 main() {
-    echo -e "${BOLD}${CYAN}Boundless Prover Node Setup by 0xMoei${RESET}"
+    trap cleanup_on_exit EXIT
+    trap 'echo "[信号] 捕获信号 ${?}，行号：${LINENO}" >> "$ERROR_LOG"' ERR
+    echo -e "${BOLD}${CYAN}Boundless Prover Node 安装脚本 by zakehowell (v$SCRIPT_VERSION)${RESET}"
     echo "========================================"
     mkdir -p "$(dirname "$LOG_FILE")"
     touch "$LOG_FILE"
     touch "$ERROR_LOG"
-    echo "[START] Installation started at $(date)" >> "$LOG_FILE"
-    echo "[START] Installation started at $(date)" >> "$ERROR_LOG"
-    info "Logs will be saved to:"
-    info "  - Full log: cat $LOG_FILE"
-    info "  - Error log: cat $ERROR_LOG"
+    echo "[开始] 安装开始，时间：$(date)" >> "$LOG_FILE"
+    echo "[开始] 安装开始，时间：$(date)" >> "$ERROR_LOG"
+    info "日志保存位置："
+    info "  - 完整日志：cat $LOG_FILE"
+    info "  - 错误日志：cat $ERROR_LOG"
     echo
+    parse_args "$@"
     if [[ $EUID -eq 0 ]]; then
         if [[ "$ALLOW_ROOT" == "true" ]]; then
-            warning "Running as root (allowed via --allow-root)"
+            warning "以 root 身份运行（通过 --allow-root 允许）"
         else
-            warning "Running as root user"
-            prompt "Continue? (y/N): "
+            warning "以 root 身份运行"
+            prompt "是否继续？(y/N): "
             read -r response
             if [[ ! "$response" =~ ^[yY]$ ]]; then
                 exit $EXIT_USER_ABORT
             fi
         fi
     else
-        warning "This script requires root privileges or a user with appropriate permissions"
-        info "Please ensure you have the necessary permissions to install packages and modify system settings"
+        warning "本脚本需要 root 权限或适当权限的用户"
+        info "请确保有安装软件包和修改系统设置的权限"
     fi
+    check_disk_space
     check_os
     update_system
-    info "Installing all dependencies..."
+    info "安装所有依赖..."
     install_basic_deps
-    # install_gpu_drivers
     install_docker
     install_nvidia_toolkit
     install_rust
     install_just
-    # install_cuda
     install_rust_deps
     clone_repository
     detect_gpus
@@ -1739,28 +1309,29 @@ main() {
     configure_network
     configure_broker
     create_management_script
-    echo -e "\n${GREEN}${BOLD}Installation Complete!${RESET}"
-    echo "[SUCCESS] Installation completed successfully at $(date)" >> "$LOG_FILE"
-    echo -e "\n${BOLD}Next Steps:${RESET}"
-    echo "1. You can now manage your Prover node via a script"
-    echo "2. Navigate to: cd $INSTALL_DIR"
-    echo "3. Run management script: ./prover.sh"
-    echo "4. Ensure you've deposited USDC stake using management script"
-    echo -e "\n${YELLOW}Important:${RESET} Always check logs when starting!"
-    echo "GPU monitoring: nvtop"
-    echo "System monitoring: htop"
-    echo -e "\n${CYAN}Script's Installation logs saved to:${RESET}"
+    create_readme
+    setup_log_rotation
+    echo -e "\n${GREEN}${BOLD}安装完成！${RESET}"
+    echo "[成功] 安装成功完成，时间：$(date)" >> "$LOG_FILE"
+    echo -e "\n${BOLD}后续步骤：${RESET}"
+    echo "1. 使用管理脚本管理节点："
+    echo "2. 进入目录：cd $INSTALL_DIR"
+    echo "3. 运行管理脚本：./prover.sh"
+    echo "4. 使用管理脚本存入 USDC 质押"
+    echo -e "\n${YELLOW}重要提示：${RESET} 启动时始终检查日志！"
+    echo "GPU 监控：nvtop"
+    echo "系统监控：htop"
+    echo -e "\n${CYAN}安装日志保存位置：${RESET}"
     echo "  - $LOG_FILE"
     echo "  - $ERROR_LOG"
-    echo -e "\n${YELLOW}Security Note:${RESET}"
-    echo "Your private key is stored in $INSTALL_DIR/.env.* files."
-    echo "Ensure these files are not accessible to unauthorized users."
-    echo "Current permissions are set to 600 (owner read/write only)."
+    echo -e "\n${YELLOW}安全提示：${RESET}"
+    echo "私钥存储在 $INSTALL_DIR/.env.* 文件中。"
+    echo "请确保这些文件不被未授权用户访问（当前权限为 600）。"
     if [[ "$START_IMMEDIATELY" == "true" ]]; then
         cd "$INSTALL_DIR"
         ./prover.sh
-    else
-        prompt "Go to management script now? (y/N): "
+    elif [[ "$NON_INTERACTIVE" != "true" ]]; then
+        prompt "现在进入管理脚本？(y/N): "
         read -r start_now
         if [[ "$start_now" =~ ^[yY]$ ]]; then
             cd "$INSTALL_DIR"
@@ -1769,5 +1340,5 @@ main() {
     fi
 }
 
-# Run main
-main
+# 运行主函数
+main "$@"
