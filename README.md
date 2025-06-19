@@ -10,6 +10,11 @@
 - **钱包**：用于质押 USDC 和与网络交互的私钥
 
 ## 一键安装
+安装 curl 命令
+```bash
+apt update && apt install -y curl
+```
+
 使用以下命令一键安装：
 ```bash
 curl -sSL https://raw.githubusercontent.com/zakehowell/boundless/main/setup_boundless_prover.sh | bash
