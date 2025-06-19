@@ -18,3 +18,24 @@ apt update && apt install -y curl
 使用以下命令一键安装：
 ```bash
 curl -sSL https://raw.githubusercontent.com/zakehowell/boundless/main/setup_boundless_prover.sh | bash
+```
+
+安装完成后使用以下命令检查日志
+```bash
+docker compose logs -f broker
+```
+
+![alt text](image.png)
+看到这些日志说明已经启动成功，等待接到任务即可。
+
+
+常用命令
+```bash
+# 停止代理并清理数据库
+just broker clean
+
+# 停止代理服务而不清理数据库
+just broker down
+
+# 启动代理
+just broker up
