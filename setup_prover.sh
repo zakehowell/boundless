@@ -440,16 +440,145 @@ detect_gpus() {
     info "根据最小 VRAM ${MIN_VRAM}MB 设置 SEGMENT_SIZE=$SEGMENT_SIZE"
 }
 
-# 配置 compose.yml
+# 配置 compose.yml 文件
 configure_compose() {
-    info "为 $GPU_COUNT 个 GPU 配置 compose.yml..."
-    cp "$INSTALL_DIR/dockerfiles/compose-template.yml" "$COMPOSE_FILE"
-    sed -i "s/\${SEGMENT_SIZE:-21}/$SEGMENT_SIZE/" "$COMPOSE_FILE"
+    info "正在为 $GPU_COUNT 张 GPU 配置 compose.yml..."
+
+    # 如果只有 1 张 GPU，使用默认 compose.yml，不需要额外配置
     if [[ $GPU_COUNT -eq 1 ]]; then
-        info "检测到单个 GPU，使用默认 compose.yml"
-    else
-        for i in $(seq 0 $((GPU_COUNT - 1))); do
-            cat >> "$COMPOSE_FILE" << EOF
+        info "检测到单张 GPU，使用默认 compose.yml"
+        return
+    fi
+
+    # 生成 compose.yml 基础结构
+    cat > "$COMPOSE_FILE" << 'EOF'
+name: bento
+
+# 公共环境变量锚点
+x-base-environment: &base-environment
+  DATABASE_URL: postgresql://${POSTGRES_USER:-worker}:${POSTGRES_PASSWORD:-password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-taskdb}
+  REDIS_URL: redis://${REDIS_HOST:-redis}:6379
+  S3_URL: http://${MINIO_HOST:-minio}:9000
+  S3_BUCKET: ${MINIO_BUCKET:-workflow}
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASS:-password}
+  RUST_LOG: ${RUST_LOG:-info}
+  RUST_BACKTRACE: 1
+
+# Agent 公共配置
+x-agent-common: &agent-common
+  image: risczero/risc0-bento-agent:stable@sha256:c6fcc92686a5d4b20da963ebba3045f09a64695c9ba9a9aa984dd98b5ddbd6f9
+  restart: always
+  runtime: nvidia
+  depends_on:
+    - postgres
+    - redis
+    - minio
+  environment:
+    <<: *base-environment
+
+# Exec Agent 公共配置
+x-exec-agent-common: &exec-agent-common
+  <<: *agent-common
+  mem_limit: 4G
+  cpus: 3
+  environment:
+    <<: *base-environment
+    RISC0_KECCAK_PO2: ${RISC0_KECCAK_PO2:-17}
+  entrypoint: /app/agent -t exec --segment-po2 ${SEGMENT_SIZE:-21}
+
+services:
+  # Redis 服务
+  redis:
+    hostname: ${REDIS_HOST:-redis}
+    image: ${REDIS_IMG:-redis:7.2.5-alpine3.19}
+    restart: always
+    ports:
+      - 6379:6379
+    volumes:
+      - redis-data:/data
+
+  # PostgreSQL 数据库服务
+  postgres:
+    hostname: ${POSTGRES_HOST:-postgres}
+    image: ${POSTGRES_IMG:-postgres:16.3-bullseye}
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taskdb}
+      POSTGRES_USER: ${POSTGRES_USER:-worker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    expose:
+      - '${POSTGRES_PORT:-5432}'
+    ports:
+      - '${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command: -p ${POSTGRES_PORT:-5432}
+
+  # MinIO 对象存储服务
+  minio:
+    hostname: ${MINIO_HOST:-minio}
+    image: ${MINIO_IMG:-minio/minio:RELEASE.2024-05-28T17-19-04Z}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASS:-password}
+      - MINIO_DEFAULT_BUCKETS=${MINIO_BUCKET:-workflow}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Grafana 监控服务
+  grafana:
+    image: ${GRAFANA_IMG:-grafana/grafana:11.0.0}
+    restart: unless-stopped
+    ports:
+     - '3000:3000'
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_LOG_LEVEL=WARN
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-taskdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-worker}
+      - POSTGRES_PASS=${POSTGRES_PASSWORD:-password}
+      - GF_INSTALL_PLUGINS=frser-sqlite-datasource
+    volumes:
+      - ./dockerfiles/grafana:/etc/grafana/provisioning/
+      - grafana-data:/var/lib/grafana
+      - broker-data:/db
+    depends_on:
+      - postgres
+      - redis
+      - minio
+
+  # 执行 agent（exec）
+  exec_agent0:
+    <<: *exec-agent-common
+
+  exec_agent1:
+    <<: *exec-agent-common
+
+  # 辅助 agent
+  aux_agent:
+    <<: *agent-common
+    mem_limit: 256M
+    cpus: 1
+    entrypoint: /app/agent -t aux --monitor-requeue
+
+EOF
+
+    # 为每个 GPU 添加独立的 prove agent 配置
+    for i in $(seq 0 $((GPU_COUNT - 1))); do
+        cat >> "$COMPOSE_FILE" << EOF
   gpu_prove_agent$i:
     <<: *agent-common
     mem_limit: 4G
@@ -462,14 +591,89 @@ configure_compose() {
             - driver: nvidia
               device_ids: ['$i']
               capabilities: [gpu]
+
 EOF
-        done
-    fi
-    if ! docker compose -f "$COMPOSE_FILE" config > /dev/null 2>&1; then
-        handle_error "Docker Compose 配置无效" $EXIT_DEPENDENCY_FAILED
-    fi
-    success "compose.yml 已为 $GPU_COUNT 个 GPU 配置并验证"
+    done
+
+    # 添加 snark agent、REST API、broker 服务配置
+    cat >> "$COMPOSE_FILE" << 'EOF'
+  snark_agent:
+    <<: *agent-common
+    entrypoint: /app/agent -t snark
+    ulimits:
+      stack: 90000000
+
+  rest_api:
+    image: risczero/risc0-bento-rest-api:stable@sha256:7b5183811675d0aa3646d079dec4a7a6d47c84fab4fa33d3eb279135f2e59207
+    restart: always
+    depends_on:
+      - postgres
+      - minio
+    mem_limit: 1G
+    cpus: 1
+    environment:
+      <<: *base-environment
+    ports:
+      - '8081:8081'
+    entrypoint: /app/rest_api --bind-addr 0.0.0.0:8081 --snark-timeout ${SNARK_TIMEOUT:-180}
+
+  broker:
+    restart: always
+    depends_on:
+      - rest_api
+EOF
+
+    # 将所有 GPU agent 加入 broker 依赖列表
+    for i in $(seq 0 $((GPU_COUNT - 1))); do
+        echo "      - gpu_prove_agent$i" >> "$COMPOSE_FILE"
+    done
+
+    # 补充 broker 的其他依赖及配置
+    cat >> "$COMPOSE_FILE" << 'EOF'
+      - exec_agent0
+      - exec_agent1
+      - aux_agent
+      - snark_agent
+      - redis
+      - postgres
+    profiles: [broker]
+    build:
+      context: .
+      dockerfile: dockerfiles/broker.dockerfile
+    mem_limit: 2G
+    cpus: 2
+    stop_grace_period: 3h
+    volumes:
+      - type: bind
+        source: ./broker.toml
+        target: /app/broker.toml
+      - broker-data:/db/
+    network_mode: host
+    environment:
+      RUST_LOG: ${RUST_LOG:-info,broker=debug,boundless_market=debug}
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      RPC_URL: ${RPC_URL}
+      ORDER_STREAM_URL:
+      POSTGRES_HOST:
+      POSTGRES_DB:
+      POSTGRES_PORT:
+      POSTGRES_USER:
+      POSTGRES_PASS:
+    entrypoint: /app/broker --db-url 'sqlite:///db/broker.db' --set-verifier-address ${SET_VERIFIER_ADDRESS} --boundless-market-address ${BOUNDLESS_MARKET_ADDRESS} --config-file /app/broker.toml --bento-api-url http://localhost:8081
+
+# 定义持久化存储卷
+volumes:
+  redis-data:
+  postgres-data:
+  minio-data:
+  grafana-data:
+  broker-data:
+EOF
+
+    # 输出成功信息
+    success "compose.yml 已为 $GPU_COUNT 张 GPU 配置完成"
 }
+
 
 # 配置网络
 configure_network() {
