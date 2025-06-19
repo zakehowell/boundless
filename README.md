@@ -19,6 +19,7 @@ apt update && apt install -y wget
 ```bash
 # 一键运行节点
 bash <(wget -qO- https://raw.githubusercontent.com/zakehowell/boundless/main/setup_prover.sh)
+```
 
 常用命令
 ```bash
